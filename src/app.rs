@@ -348,6 +348,14 @@ impl App {
                 if self.xlsx_sheet > 0 { self.xlsx_sheet -= 1; self.spawn_preview(tx.clone(), jobs, abort); }
                 self.dirty = true;
             }
+            Action::OpenExternal => {
+                if let Some(entry) = self.selected_entry() {
+                    // Only allowed Command spawn per docs — open via open crate
+                    let _ = open::that(&entry.path);
+                    tracing::info!("open external {:?}", entry.path);
+                }
+                self.dirty = true;
+            }
             Action::PlayPause => { self.toggle_audio(); self.dirty = true; }
             Action::Stop => { self.stop_audio(); self.dirty = true; }
             Action::Char(_) | Action::BackspaceChar | Action::CopyPath => {}
@@ -468,13 +476,20 @@ pub async fn run(path: PathBuf, cfg: Config) -> anyhow::Result<()> {
                         }
                     }
                 }
-                Event::Resize(_, _) => { app.dirty = true; }
+                Event::Resize(_, _) => {
+                    // Invalidate quantized cache via respawn (area changed)
+                    app.dirty = true;
+                    app.spawn_preview(tx.clone(), &mut jobs, &mut current_abort);
+                }
                 _ => {}
             }
         }
         // Drain any extra resizes
         while event::poll(Duration::from_millis(0))? {
-            if let Event::Resize(_, _) = event::read()? { app.dirty = true; } else { break; }
+            if let Event::Resize(_, _) = event::read()? {
+                app.dirty = true;
+                app.spawn_preview(tx.clone(), &mut jobs, &mut current_abort);
+            } else { break; }
         }
         // Also poll rx again after handling input to update preview quickly
         while let Ok((path, res)) = rx.try_recv() {

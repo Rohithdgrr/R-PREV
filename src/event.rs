@@ -24,6 +24,7 @@ pub enum Action {
     PrevPage,      // p
     NextSheet,     // Tab
     PrevSheet,     // Shift+Tab
+    OpenExternal,  // o
 }
 
 pub fn key_to_action(key: KeyEvent) -> Option<Action> {
@@ -43,11 +44,12 @@ pub fn key_to_action(key: KeyEvent) -> Option<Action> {
         (KeyCode::Char('p'), KeyModifiers::NONE) => Some(Action::PrevPage),
         (KeyCode::Tab, KeyModifiers::NONE) => Some(Action::NextSheet),
         (KeyCode::BackTab, _) => Some(Action::PrevSheet),
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Some(Action::OpenExternal),
         (KeyCode::Char(' '), _) => Some(Action::PlayPause),
         (KeyCode::Char('s'), KeyModifiers::NONE) => Some(Action::Stop),
         (KeyCode::Enter, _) => Some(Action::Enter),
         (KeyCode::Backspace, _) => Some(Action::BackspaceChar),
-        (KeyCode::Char(c), KeyModifiers::NONE) if c != 'q' && c != 'j' && c != 'k' && c != 'g' && c != 'h' && c != 'f' && c != 's' && c != 'n' && c != 'p' => Some(Action::Char(c)),
+        (KeyCode::Char(c), KeyModifiers::NONE) if c != 'q' && c != 'j' && c != 'k' && c != 'g' && c != 'h' && c != 'f' && c != 's' && c != 'n' && c != 'p' && c != 'o' => Some(Action::Char(c)),
         _ => None,
     }
 }
