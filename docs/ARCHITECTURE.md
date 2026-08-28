@@ -72,13 +72,17 @@ enum PreviewResult { Text{lines: Vec<Line>, meta: Meta}, Table{table: TableData}
 
 ### Layer 5 — Cache & Performance ( `src/cache/*` )
 - Two-tier: `Memory LRU (100 entries, ~50MB)` + `Disk (~/.cache/tui-preview/thumbs/<sha256>.png, 500MB cap)`.
-- Key: `sha256(canonical_path + mtime_secs + size + handler_version)`.
-- Async worker pool: `tokio::task::spawn_blocking` pool size 2, `JoinSet`, cancellation on selection change via `AbortHandle`.
+- Key: `sha256(canonical_path + mtime_secs + size + quantized_area + handler_version)` — area quantized to 8 cols × 4 rows (see §5.1) to avoid churn on pixel resize.
+- Async worker pool: `tokio::task::spawn_blocking` sized `(num_cpus/2).clamp(2,6)` via `num_cpus` crate (configurable `cache.worker_threads`), `JoinSet`, cancellation on selection change via `AbortHandle`.
+- Centralized timeout: router wraps every handler dispatch in `tokio::time::timeout(5s, ...)` — per-handler timeouts not duplicated.
 - Limits guard heavy files: `>50MB image, >100MB pdf/video -> Meta-only + press Enter to force`.
+
+#### 5.1 Cache Key Quantization (fixes churn)
+`Rect {width,height}` rounded down to nearest `8 cols × 4 rows` before hashing. One-pixel resize no longer generates new key → no re-decode storm.
 
 ### Layer 6 — Filesystem ( `src/fs/*` )
 - `walkdir` with `.gitignore` respect, `.tui-ignore`, sorted `dirs first, alpha`.
-- `notify` crate optional file watcher for live reload.
+- `notify` crate optional file watcher for live reload — **feature-gated `watch` (`--features watch`)**; absent from default deps to keep binary lean. When feature off, `fs/watcher.rs` is not compiled.
 - Safe path handling: `canonicalize` + symlink depth limit 10.
 
 ## 4. Crate Module Map
@@ -92,16 +96,17 @@ src/
 ├─ error.rs             # thiserror enums
 ├─ fs/
 │  ├─ mod.rs            # list_dir, file entry types
-│  └─ watcher.rs        # notify integration
+│  └─ watcher.rs        # notify integration — only with `watch` feature (cfg(feature="watch"))
 ├─ preview/
-│  ├─ mod.rs            # trait + router
+│  ├─ mod.rs            # trait + router (centralized timeout, quantized cache key)
 │  ├─ image.rs          # image + resvg
-│  ├─ text.rs           # syntect + csv + markdown
-│  ├─ pdf.rs            # lopdf + mupdf/pdfium
-│  ├─ office.rs         # docx-rs + calamine + pptx-rs
+│  ├─ text.rs           # syntect + csv + markdown (memmap2 for large files)
+│  ├─ archive.rs        # zip/tar/tar.gz/7z listing (new, cheap)
+│  ├─ pdf.rs            # lopdf + pdf-extract + pdfium-render (feature pdf-raster, NOT mupdf AGPL)
+│  ├─ office.rs         # docx-rs + calamine + zip+quick-xml pptx (pptx-rs removed: abandoned)
 │  ├─ audio.rs          # symphonia + lofty + rodio
 │  ├─ video.rs          # ffmpeg-next (feature) / mp4 header
-│  └─ meta.rs           # file metadata extractor
+│  └─ meta.rs           # file metadata extractor + EXIF + du
 ├─ term/
 │  ├─ mod.rs
 │  ├─ capabilities.rs   # detect Kitty/Sixel
@@ -136,8 +141,11 @@ All decodes off main thread; UI never blocks >16ms.
 
 ## 6. Concurrency Model
 
-- **Main thread:** Tokio current_thread runtime + crossterm event stream.
-- **Blocking pool:** 2 threads for CPU-heavy decodes (image resize, pdf raster, xlsx parse).
+- **Main thread:** Tokio multi_thread runtime (trimmed features `rt, rt-multi-thread, macros, time, sync, fs`) + crossterm event stream.
+- **Blocking pool:** Sized `(num_cpus::get()/2).clamp(2,6)` via `num_cpus`, configurable `cache.worker_threads` in config.toml; `tokio::task::spawn_blocking` + `JoinSet`.
+- **Centralized timeout:** `tokio::time::timeout(Duration::from_secs(5), handler.preview(ctx))` in `src/preview/mod.rs:router dispatch` — single enforcement point, cannot be forgotten per handler.
+- **Unwind preserved:** `Cargo.toml` keeps `panic="unwind"` (default) so `catch_unwind` inside `spawn_blocking` works; `panic="abort"` removed (was breaking SECURITY.md §5).
+- **Large text zero-copy:** `text.rs` uses `memmap2::Mmap` for read-only mapped access on files >1MB, avoiding read+copy.
 - **Cancellation:** Each preview job has `AbortHandle`; new selection aborts previous if not yet done.
 - **Backpressure:** Channel size 8, drop oldest if flooded (fast scrolling).
 
@@ -168,10 +176,12 @@ Goal: Startup <80ms, navigation <16ms, cached preview <30ms, cold image <300ms.
 
 ## 9. Security Boundaries
 
-- No `unsafe` except in `ffmpeg-next` binding (feature-gated, audited).
+- No `unsafe` except in `ffmpeg-next`/`pdfium-render` bindings (feature-gated, audited). `mupdf` (AGPL-3.0) removed entirely — `pdfium-render` is Apache-2.0.
 - No `Command::new`; deny via `clippy.toml: disallowed-methods = ["std::process::Command::new"]`.
-- Limit decompression bombs: SVG depth 100, zip entries 10k, image dimensions 10000x10000.
-- Sandboxed parsing: all file reads via `std::fs::read` + size check before decode.
+- Lock file: `Cargo.lock` COMMITTED (binary crate, supply-chain audit) — `.gitignore` fixed not to exclude it.
+- Keep `panic="unwind"` so `catch_unwind` works (see SECURITY.md §5).
+- Limit decompression bombs: SVG depth 100, zip entries 10k, image dimensions 10000x10000, `cargo deny` bans GPL/AGPL crates.
+- Sandboxed parsing: all file reads via `std::fs::read` / `memmap2` + size check before decode.
 
 ## 10. Config & Extensibility
 
@@ -181,10 +191,13 @@ Goal: Startup <80ms, navigation <16ms, cached preview <30ms, cold image <300ms.
 
 ## 11. Build & Distribution Architecture
 
-- Single static binary, `cargo build --release`, LTO + strip.
+- Single static binary, `cargo build --release`, LTO + strip, `panic="unwind"` preserved.
+- Tokio trimmed (`rt, rt-multi-thread, macros, time, sync, fs`) — no `full` (saves compile time + binary size).
+- `Cargo.lock` committed; CI runs `cargo audit` + `cargo deny` on every push.
 - Cross-compile via `cargo-xwin` / `cargo-zigbuild`.
 - Release artifacts: `tui-preview-{linux-x64,macos-arm64,windows-x64}.tar.gz` + `cargo install tui-preview`.
-- Feature flags keep base binary pure Rust (~10 MB) vs `video` feature (~25 MB with FFmpeg static).
+- Feature flags keep base binary pure Rust (~10 MB) vs `full` (~25 MB with FFmpeg/pdfium).
+- CI: `.github/workflows/ci.yml` from day one — `fmt`, `clippy -D warnings`, `test`, `audit`, `deny` — green pipeline before `src/` lands.
 
 ## 12. Alternatives Considered & Rejected
 

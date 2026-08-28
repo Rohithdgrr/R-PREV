@@ -1,0 +1,7 @@
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]
+deny = ["GPL-3.0", "AGPL-3.0", "GPL-2.0"]
+# Would have caught mupdf (AGPL) — fixed to pdfium-render (Apache-2.0)
+
+[bans]
+multiple-versions = "allow"

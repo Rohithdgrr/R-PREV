@@ -1,0 +1,29 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy -- -D warnings
+      - name: test
+        run: cargo test --lib
+      - name: build pure
+        run: cargo build --release
+      - name: cargo deny
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

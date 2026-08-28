@@ -1,6 +1,7 @@
 # Rust
 /target/
-Cargo.lock
+# Cargo.lock is COMMITTED for binaries (see SECURITY.md §7) — do not ignore
+# Cargo.lock  <-- intentionally not ignored; binary crate must lock deps for supply-chain audit
 **/*.rs.bk
 *.pdb
 

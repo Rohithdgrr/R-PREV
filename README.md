@@ -37,8 +37,9 @@ tui-preview ./report.pdf      # focus file
 | Text/Code | `syntect` | 100+ languages, 2MB limit |
 | CSV/TSV | `csv`, `comfy-table` | Table, delimiter auto |
 | Markdown | `pulldown-cmark` | Styled headings |
-| PDF | `lopdf`, `pdf-extract` (+ `mupdf` feature for raster) | Text + optional 150 DPI image |
-| DOCX/XLSX/PPTX | `docx-rs`, `calamine`, `pptx-rs` | Tables, sheets via Tab, slides n/p |
+| PDF | `lopdf`, `pdf-extract` (+ `pdfium-render` Apache-2.0 feature, was `mupdf` AGPL removed) | Text + optional 150 DPI image |
+| DOCX/XLSX/PPTX | `docx-rs`, `calamine`, `zip`+`quick-xml` pptx (was `pptx-rs` abandoned) | Tables, sheets via Tab, slides n/p |
+| ZIP/TAR/TGZ | `zip`, `tar`+`flate2` | Archive entry listing (NEW) |
 | Audio mp3/flac/wav | `symphonia`, `lofty`, `rodio` | Meta + waveform + Space play |
 | Video mp4/mkv | `mp4` (meta) / `ffmpeg-next` feature (thumb) | Thumbnail at 10% |
 

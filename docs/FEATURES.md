@@ -23,7 +23,7 @@
 
 | Format | Handler | Features |
 |---|---|---|
-| PNG, JPEG, GIF, WEBP, BMP | `image` crate | ✅ Resize Lanczos3, metadata (dim, size), EXIF via `kamadak-exif` (future) |
+| PNG, JPEG, GIF, WEBP, BMP | `image` crate | ✅ Resize Lanczos3, metadata (dim, size), EXIF panel via `kamadak-exif`/`little_exif` (🔜) |
 | SVG | `resvg` + `usvg` | ✅ Raster to RGBA, scale to pane |
 | ICO, TIFF | `image` | 🔜 |
 | AVIF | `image` + `libavif` binding | 💡 (behind feature) |
@@ -59,12 +59,12 @@
 |---|---|---|
 | Text extraction | `lopdf` + `pdf-extract` — first 2 pages, searchable | ✅ |
 | Page count + author | Via `lopdf::Document::trailer` | ✅ |
-| Raster first page (opt) | `mupdf`/`pdfium` at 150 DPI → image pane split | 🔜 (`--features pdf-raster`) |
+| Raster first page (opt) | `pdfium-render` (Apache-2.0) at 150 DPI → image pane split | 🔜 (`--features pdf-raster`, NOT `mupdf` AGPL) |
 | Page nav `n/p` | Next/prev page in fullscreen, cache per page | 🔜 |
-| Search `Ctrl-F` | Within extracted text | 💡 |
+| In-doc search `Ctrl-F` | Search within extracted text, highlight matches | 🔜 (cheap, high value) |
 | Thumbnail strip | Vertical filmstrip of pages (future) | 💡 |
 
-*Pure Rust default = text-only; raster is opt-in C binding, documented.*
+*Pure Rust default = text-only; raster is opt-in `pdfium-render` (Apache-2.0) via `pdf-raster` feature; `mupdf` AGPL removed.*
 
 ## 5. Office Documents — No LibreOffice Needed
 
@@ -72,7 +72,7 @@
 |---|---|---|
 | DOCX | `docx-rs` | ✅ Paragraphs, headings, tables → styled text |
 | XLSX, XLS, ODS | `calamine` | ✅ First sheet as Table, `Tab`/`Shift-Tab` switch sheets, column widths auto |
-| PPTX | `pptx-rs` | ✅ Slide titles + bullets paginated, `n/p` per slide |
+| PPTX | `zip` + `quick-xml` (in-house, `pptx-rs` removed — abandoned) | ✅ Slide titles + bullets paginated, `n/p` per slide |
 | DOC (old) | `calamine` + `encoding_rs` | 🔜 Text extraction only |
 
 **Features:**
@@ -108,22 +108,28 @@
 | Feature | Details |
 |---|---|
 | Directory preview | Summary: `42 entries (30 files, 12 dirs) • 1.2GB` + largest files | ✅ |
+| Dir size on demand `D` | `du`-style async walk + sum, cached (NEW — `src/fs/du.rs:1`) | 🔜 |
 | Sorting | Dirs first + alpha; `s` cycles size/mtime | 🔜 |
 | .gitignore respect | `ignore` crate respects `.gitignore` + `.tui-ignore` | ✅ |
 | Symlink | Show `→ target`, depth limit 10, broken highlight red | ✅ |
 | Permissions | `rwxr-xr-x` + size humanized `4.2M` in list | ✅ |
-| Watch (future) | `notify` live reload on fs change | 💡 |
+| Git-aware badges | `gix` crate: `M` modified, `?` untracked, `S` staged (NEW, `--features git`) | 🔜 |
+| Watch (`notify`) | Live reload on fs change — feature-gated `watch` (was missing from Cargo.toml, now fixed) | 🔜 |
+| Archive preview `zip/tar/tar.gz` | Entry listing `Name | Size | Packed | Ratio` via `zip`/`tar`+`flate2` (NEW, cheap — Yazi top feature) | 🔜 |
 
 ## 9. Caching & Performance
 
 | Feature | Details | Phase |
 |---|---|---|
 | Two-tier cache | Mem LRU 100 + Disk 500MB `~/.cache/tui-preview` | ✅ |
-| Key = hash(path+mtime+size+area) | Auto-invalidates on edit/resize | ✅ |
-| Async + cancellation | Fast scroll aborts stale decodes, 2-worker pool | ✅ |
+| Key = hash(path+mtime+size+**quantized_area**) | Quantized 8 cols × 4 rows — no churn on pixel resize (FIXED) | ✅ |
+| Async + cancellation + 5s timeout | Router `tokio::time::timeout` centralized; fast scroll aborts stale | ✅ |
+| Sized blocking pool | `(num_cpus/2).clamp(2,6)` via `num_cpus`, configurable `worker_threads` (FIXED: was hardcoded 2) | ✅ |
+| Large text `memmap2` | Zero-copy mmap for files >1MB (NEW) | ✅ |
 | Size guards | 50MB image / 100MB pdf threshold → "Enter to force" | ✅ |
-| Benchmarks | `cargo bench` asserts <300ms cold image | 🔜 |
+| Benchmarks | `cargo bench` asserts <300ms cold image, regression gate in CI | 🔜 |
 | Clear cache | `tui-preview --clear-cache` | ✅ |
+| Keep `panic=unwind` | `catch_unwind` works for malformed files (FIXED: was `abort`) | ✅ |
 
 ## 10. Configuration & Customization
 
@@ -145,6 +151,8 @@
 | `yazi`/`ranger` previewer | Implement `--preview` subcommand for file managers | 🔜 |
 | `--export-thumbs <dir>` | Batch export thumbnails without TUI (automation/CI) | 🔜 |
 | `--bench` | Benchmark mode for CI artifacts | 🔜 |
+| `$EDITOR` jump `e` | Open text file in `$EDITOR` (nvim/vim) alongside `o` for OS open (NEW — terminal user top request) | 🔜 |
+| `EXIF` panel `x` | Image EXIF/metadata overlay via `kamadak-exif` (NEW, cheap) | 🔜 |
 | Headless server | Works over SSH (no GPU, Sixel degrades gracefully) | ✅ |
 
 ## 12. Accessibility & Polish
@@ -160,12 +168,14 @@
 
 ## 13. Feature Flags Summary
 
-| Flag | Adds | Binary |
-|---|---|---|
-| `default` | Pure Rust, all except video thumb/pdf raster | ~10 MB |
-| `pdf-raster` | `mupdf` page raster | +5 MB |
-| `video` | `ffmpeg-next` thumb + metadata | +15 MB |
-| `full` | All above | ~25 MB |
+| Flag | Adds | Binary | License |
+|---|---|---|---|
+| `default` | Pure Rust, archive+text/image/pdf-text/office/audio/meta, `memmap2` | ~10 MB | MIT |
+| `pdf-raster` | `pdfium-render` page raster (Apache-2.0, NOT mupdf AGPL) | +5 MB | Apache-2.0 |
+| `video` | `ffmpeg-next` thumb + metadata | +15 MB | Varies (FFmpeg) |
+| `watch` | `notify` file watcher | +0.5 MB | — |
+| `git` | `gix` git badges | +1 MB | — |
+| `full` | All above | ~25 MB | — |
 
 Install choose:
 
@@ -189,16 +199,17 @@ All decisions keep **lightweight + fast + working** — rich preview, not editor
 ## 15. Feature Dependency Graph
 
 ```
-FileList + Router (must)
-  ├─ ImageHandler (must, easiest win)
-  ├─ Text/Csv/Md (must)
-  ├─ Pdf text (must) ── Pdf raster (opt)
-  ├─ Office (must text, opt images)
+FileList + Router (must, with centralized 5s timeout + quantized cache)
+  ├─ ImageHandler (must, easiest win) + EXIF panel
+  ├─ Text/Csv/Md (must, memmap2 for large)
+  ├─ ArchiveHandler (must, cheap via zip/tar)
+  ├─ Pdf text (must) ── Pdf raster via pdfium-render (opt, Apache-2.0)
+  ├─ Office (must text, zip+quick-xml pptx) (no pptx-rs)
   ├─ Audio meta+play (must)
-  └─ Video meta (must) ── Video thumb (opt)
-Cache (must for perf)
-Term Graphics (must fallback)
-Search (must for power users)
+  └─ Video meta (must) ── Video thumb via ffmpeg-next (opt)
+Cache (must, sized pool + quantized keys)
+Term Graphics (must fallback half-block)
+Search (must) + Git badges (opt) + Dir du (opt) + $EDITOR jump
 ```
 
 Build in that order — see PHASEWISEPLAN.md.
