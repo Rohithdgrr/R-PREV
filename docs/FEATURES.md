@@ -1,215 +1,207 @@
-# FEATURES.md — Rich Feature Catalog (Pure Rust, Lightweight, Fast)
+# FEATURES.md — Native App Killer Catalog — v2
 
-> Every feature tagged by phase: ✅ MVP (Phase 1), 🔜 Phase 2, 💡 Future.
+> ✅ = in default build, 🔜 = behind feature or next phase, 💡 = post-v2. New v2 tags: ★ killer over native apps.
 
-## 1. Core TUI Experience
+## 1. Core TUI
 
-| Feature | Description | Phase |
+| Feature | Desc | Phase |
 |---|---|---|
-| Two-pane layout (30/70) | File list + preview, status bar | ✅ |
-| Full keyboard nav `j/k, g/G, h/l` | Vim-style, no mouse needed | ✅ |
-| Fuzzy search `/` | `nucleo-matcher` live filter, Esc to clear | ✅ |
-| Fullscreen preview `f` | Toggle handler output to full terminal | ✅ |
-| Help overlay `?` | Keybinds cheatsheet, handler info | ✅ |
-| Theme dark/light | `config.toml` + auto truecolor detect | ✅ |
-| Hidden toggle `h` | Show dotfiles | ✅ |
-| Parent nav `Backspace` | Up one dir | ✅ |
-| Yank path `y` | Copy selected path to clipboard (via `arboard` pure Rust) | 🔜 |
-| File ops `d, r, n` | Delete/rename/new file (confirm modal) | 💡 |
-| Sort toggle `s` | Name/size/mtime, dirs-first toggle | 🔜 |
-| Bookmarks `m` + `'` | Mark dir, jump back | 💡 |
+| Two-pane 30/70 + footer + modals | — | ✅ |
+| `j/k g/G h/l` nav | vim | ✅ |
+| fuzzy `/` `nucleo-matcher` | live | ✅ |
+| fullscreen `f` | — | ✅ |
+| help `?` | cheatsheet + term caps | ✅ |
+| theme dark/light | + auto truecolor | ✅ |
+| hidden `h` parent `Backspace` | — | ✅ |
+| **Daemon `<5ms` hot startup** ★ | `--daemon` socket, client IPC `interprocess`, auto-start if missing, `systemd/launchd` unit | 🔜 `daemon` |
+| **Redux time-travel** ★ | `Store<State,Action,Effect>` `Ctrl+Shift+T` step back, deterministic replay file for bug reports | 🔜 |
+| **Wasm plugins** ★ | `*.wasm` in `~/.config/tui-preview/plugins`, Python/JS/Rust via `extism`/`wasmtime`, hot-reload, trap-isolated, WIT `preview(path,area)->CBOR` | 🔜 `wasm` |
+| mouse `scroll/click/drag` ★ | `crossterm EnableMouseCapture` | 🔜 |
+| clipboard `Ctrl+C` ★ | `arboard` image/text → desktop bridge | 🔜 `clipboard` |
+| yank `y` | path | 🔜 `clipboard` |
+| sort `s` bookmarks `m` `'` | — | 💡 |
+| file ops `d r n` | modal confirm | 💡 |
 
-## 2. Image Preview — Easiest & Most Polished
+## 2. Image ★
 
-| Format | Handler | Features |
+| Format | Handler | Phase |
 |---|---|---|
-| PNG, JPEG, GIF, WEBP, BMP | `image` crate | ✅ Resize Lanczos3, metadata (dim, size), EXIF panel via `kamadak-exif`/`little_exif` (🔜) |
-| SVG | `resvg` + `usvg` | ✅ Raster to RGBA, scale to pane |
-| ICO, TIFF | `image` | 🔜 |
-| AVIF | `image` + `libavif` binding | 💡 (behind feature) |
+| png/jpg/gif/webp/bmp | `image` Lanczos3 | ✅ |
+| svg | `resvg`+`usvg` | ✅ |
+| **EXIF panel `x`** ★ | `little_exif` GPS/camera/lens | 🔜 `exif` |
+| ico/tiff | `image` | 🔜 |
+| Kitty/Sixel/iTerm2/half-block `▀` | always works | ✅ |
+| zoom `+/-` pan `hjkl` | fullscreen | 🔜 |
+| slideshow `a` 2s | — | 🔜 |
 
-**Rendering:**
-- ✅ Kitty Graphics Protocol (WezTerm, Kitty, Ghostty)
-- ✅ Sixel (Foot, Windows Terminal 1.22+)
-- ✅ iTerm2 Inline (macOS)
-- ✅ Fallback half-block `▀` truecolor — 2 pixels per cell, always works
-- 🔜 Zoom `+/−` and pan `hjkl` in fullscreen
-- 🔜 Slideshow `a` auto-advance 2s
+`4032×3024 PNG 4.2MB EXIF: iPhone` bar via `src/preview/meta.rs`
 
-**Metadata bar:** `4032×3024 • 4.2MB • PNG • 3 days ago` via `src/preview/meta.rs:1`
+## 3. Text / Code ★
 
-## 3. Text & Code
-
-| Feature | Details | Phase |
+| Feature | Phase | Killer over native |
 |---|---|---|
-| Syntax highlight | `syntect` 100+ languages, TextMate themes `base16` | ✅ |
-| Binary guard | `content_inspector` detects binary → show hex/metadata not garbage | ✅ |
-| Encoding | `encoding_rs` auto UTF-8/Windows-1252 | ✅ |
-| Large file | Limit 2MB/5000 lines, truncate + "… +N lines" | ✅ |
-| Line numbers `L` | Toggle gutter | 🔜 |
-| Search in file `Ctrl-F` | Highlight matches | 💡 |
-| Markdown render | `pulldown-cmark` → styled headings/lists/code | ✅ |
-| CSV/TSV table | `csv` sniff delimiter → `comfy-table` → Ratatui Table, 100 rows + header | ✅ |
-| JSON pretty | `serde_json` formatted + syntect json | 🔜 |
-| Log tail `T` | Follow file like `tail -f` via `notify` | 💡 |
+| **tree-sitter AST** `tree-sitter` folding `z` jump `gd` scope | 🔜 `tree-sitter` | syntect regex → real parse (Sublime/VS Code parity) |
+| syntect fallback | ✅ | — |
+| **lazy viewport** `SparseIndex` `memmap2` only `height` lines ★ | ✅ | 1GB log `<50ms` not `2s` |
+| **simd-json / simdutf8** for `.json`/ndjson | 🔜 `simd` | 3-10× serde |
+| binary guard `content_inspector` | ✅ | hex fallback |
+| encoding `encoding_rs` | ✅ | — |
+| **hex editor `H`** ★ | 🔜 `hex` | `hexyl`-style dump + ascii, power inspect |
+| markdown `pulldown-cmark` | ✅ | — |
+| csv `csv` 100 rows + `SparseIndex` | ✅ | viewport only |
+| **io_uring** dir walk `tokio-uring` (Linux NVMe) | 🔜 `io-uring` | -30% latency |
+| log tail `T` | 💡 | `notify` watch |
+| line nos `L` in-file `Ctrl-F` | 🔜 | — |
 
-## 4. PDF
+## 4. PDF ★
 
-| Feature | Details | Phase |
-|---|---|---|
-| Text extraction | `lopdf` + `pdf-extract` — first 2 pages, searchable | ✅ |
-| Page count + author | Via `lopdf::Document::trailer` | ✅ |
-| Raster first page (opt) | `pdfium-render` (Apache-2.0) at 150 DPI → image pane split | 🔜 (`--features pdf-raster`, NOT `mupdf` AGPL) |
-| Page nav `n/p` | Next/prev page in fullscreen, cache per page | 🔜 |
-| In-doc search `Ctrl-F` | Search within extracted text, highlight matches | 🔜 (cheap, high value) |
-| Thumbnail strip | Vertical filmstrip of pages (future) | 💡 |
-
-*Pure Rust default = text-only; raster is opt-in `pdfium-render` (Apache-2.0) via `pdf-raster` feature; `mupdf` AGPL removed.*
-
-## 5. Office Documents — No LibreOffice Needed
-
-| Format | Crate | Rendering |
-|---|---|---|
-| DOCX | `docx-rs` | ✅ Paragraphs, headings, tables → styled text |
-| XLSX, XLS, ODS | `calamine` | ✅ First sheet as Table, `Tab`/`Shift-Tab` switch sheets, column widths auto |
-| PPTX | `zip` + `quick-xml` (in-house, `pptx-rs` removed — abandoned) | ✅ Slide titles + bullets paginated, `n/p` per slide |
-| DOC (old) | `calamine` + `encoding_rs` | 🔜 Text extraction only |
-
-**Features:**
-- ✅ Table view for XLSX with frozen header
-- ✅ Formula display (show value, `f` toggle formula)
-- 🔜 Embedded image extraction (docx media/ folder → image preview)
-- 💡 Slide thumbnails (render slide XML via `resvg` — heavy)
-
-## 6. Audio — Pure Rust Playback
-
-| Feature | Details | Phase |
-|---|---|---|
-| Formats | MP3, FLAC, WAV, OGG, M4A/AAC via `symphonia` | ✅ |
-| Metadata | Title/artist/album/bitrate/sample-rate/duration via `lofty` | ✅ |
-| Waveform | 30s decode → 80-bar Sparkline | ✅ |
-| Playback `Space` | `rodio` Sink play/pause `Space`, stop `s`, auto-stop on nav | ✅ |
-| Volume `-/=` | Sink volume 0.0-1.0 | 🔜 |
-| Seek `</>` | 5s forward/back (decode seek) | 💡 |
-| Playlist `a` | Queue all audio in dir | 💡 |
-
-## 7. Video — Feature-Gated
-
-| Feature | Details | Phase |
-|---|---|---|
-| Metadata | Duration, resolution, fps, codec, bitrate via `ffmpeg-next` or `mp4` header | ✅ (metadata) / 🔜 (thumbnail) |
-| Thumbnail | Frame at 10% duration -> image pipeline | 🔜 (`--features video`) |
-| Strip preview `t` | 5 thumbnails across timeline | 💡 |
-| Launch external `o` | Open with `$VIDEO_PLAYER` (mpv/vlc) | ✅ (spawns via `open` crate, only external spawn allowed) |
-| Pure Rust fallback | `mp4` crate header parse without FFmpeg, no thumbnail | ✅ default |
-
-## 8. Filesystem & Navigation
-
-| Feature | Details |
+| Feature | Phase |
 |---|---|
-| Directory preview | Summary: `42 entries (30 files, 12 dirs) • 1.2GB` + largest files | ✅ |
-| Dir size on demand `D` | `du`-style async walk + sum, cached (NEW — `src/fs/du.rs:1`) | 🔜 |
-| Sorting | Dirs first + alpha; `s` cycles size/mtime | 🔜 |
-| .gitignore respect | `ignore` crate respects `.gitignore` + `.tui-ignore` | ✅ |
-| Symlink | Show `→ target`, depth limit 10, broken highlight red | ✅ |
-| Permissions | `rwxr-xr-x` + size humanized `4.2M` in list | ✅ |
-| Git-aware badges | `gix` crate: `M` modified, `?` untracked, `S` staged (NEW, `--features git`) | 🔜 |
-| Watch (`notify`) | Live reload on fs change — feature-gated `watch` (was missing from Cargo.toml, now fixed) | 🔜 |
-| Archive preview `zip/tar/tar.gz` | Entry listing `Name | Size | Packed | Ratio` via `zip`/`tar`+`flate2` (NEW, cheap — Yazi top feature) | 🔜 |
+| text `lopdf`+`pdf-extract` 2 pages searchable | ✅ |
+| count/author | ✅ |
+| raster `pdfium-render` Apache-2.0 **child-isolated** `n/p` paginate | 🔜 `pdf-raster` |
+| **in-doc search `Ctrl-F`** ★ | 🔜 |
+| AI summarize ★ | 🔜 `local-ai` |
+| strip future | 💡 |
 
-## 9. Caching & Performance
+`mupdf` AGPL removed.
 
-| Feature | Details | Phase |
+## 5. Office / Archive ★
+
+| Format | Handler | Phase |
 |---|---|---|
-| Two-tier cache | Mem LRU 100 + Disk 500MB `~/.cache/tui-preview` | ✅ |
-| Key = hash(path+mtime+size+**quantized_area**) | Quantized 8 cols × 4 rows — no churn on pixel resize (FIXED) | ✅ |
-| Async + cancellation + 5s timeout | Router `tokio::time::timeout` centralized; fast scroll aborts stale | ✅ |
-| Sized blocking pool | `(num_cpus/2).clamp(2,6)` via `num_cpus`, configurable `worker_threads` (FIXED: was hardcoded 2) | ✅ |
-| Large text `memmap2` | Zero-copy mmap for files >1MB (NEW) | ✅ |
-| Size guards | 50MB image / 100MB pdf threshold → "Enter to force" | ✅ |
-| Benchmarks | `cargo bench` asserts <300ms cold image, regression gate in CI | 🔜 |
-| Clear cache | `tui-preview --clear-cache` | ✅ |
-| Keep `panic=unwind` | `catch_unwind` works for malformed files (FIXED: was `abort`) | ✅ |
+| docx `docx-rs` | paragraphs/tables | ✅ |
+| xlsx `calamine` `Tab` sheets | ✅ | 
+| pptx `zip`+`quick-xml` (was `pptx-rs` abandoned) `n/p` | ✅ |
+| **archive VFS ★** zip/tar/tar.gz/7z as folder `Enter` dives **no extract** | 🔜 | killer over Explorer zip preview |
+| archive listing `Name Size Packed Ratio` via `zip`/`tar`/`sevenz-rust` | ✅ listing; VFS 🔜 `archive-vfs` |
+| `du` on demand `D` async cache | 🔜 |
+| xlsx formula `f` toggle | 🔜 |
 
-## 10. Configuration & Customization
+## 6. Audio ★ true playback
 
-| Feature | Details |
+| Feature | Phase |
 |---|---|
-| `config.toml` | `~/.config/tui-preview/config.toml` — theme, keys, cache, limits | ✅ |
-| Key remap | Any Action → key string in TOML | ✅ |
-| Theme | `dark`/`light`, syntect theme `base16-ocean.dark` etc. | ✅ |
-| Env overrides | `TUI_PREVIEW_THEME=light` | 🔜 |
-| `--init-config` | Generate default config file | ✅ |
+| mp3/flac/wav/ogg/m4a `symphonia` `lofty` | ✅ |
+| waveform 30s 80-bar sparkline | ✅ |
+| **playback `Space` rodio Sink background** ★ | ✅ (was meta only) |
+| volume `-=` seek `<>` 5s | 🔜 |
+| playlist queue `a` | 💡 |
 
-## 11. Integration & Scriptability
+## 7. Video ★ flipbook
 
-| Feature | Details |
+| Feature | Phase |
 |---|---|
-| CLI `tui-preview [PATH]` | Open dir or file, `tui-preview ./report.pdf` focuses it | ✅ |
-| Pipe `ls \| tui-preview` | Accept file list on stdin (future) | 💡 |
-| `fzf` integration | `fzf --preview 'tui-preview --preview {}'` headless preview mode `--preview <file>` prints text/renders image escape | 🔜 |
-| `yazi`/`ranger` previewer | Implement `--preview` subcommand for file managers | 🔜 |
-| `--export-thumbs <dir>` | Batch export thumbnails without TUI (automation/CI) | 🔜 |
-| `--bench` | Benchmark mode for CI artifacts | 🔜 |
-| `$EDITOR` jump `e` | Open text file in `$EDITOR` (nvim/vim) alongside `o` for OS open (NEW — terminal user top request) | 🔜 |
-| `EXIF` panel `x` | Image EXIF/metadata overlay via `kamadak-exif` (NEW, cheap) | 🔜 |
-| Headless server | Works over SSH (no GPU, Sixel degrades gracefully) | ✅ |
+| meta `mp4` header | ✅ default |
+| **thumbnail child-isolated** `ffmpeg-next` frame 10% | 🔜 `video` (was segfault-risk) |
+| **flipbook playback** ★ Kitty/Sixel frames at 15fps while focused | 🔜 `video` |
+| strip `t` 5 thumbs | 💡 |
+| `o` mpv `e` $EDITOR | ✅ |
 
-## 12. Accessibility & Polish
+## 8. Filesystem ★
 
-| Feature | Details |
+| Feature | Phase |
 |---|---|
-| Truecolor auto | Detect `COLORTERM=truecolor`, fallback 256 | ✅ |
-| Unicode correct | `unicode-width` for table alignment | ✅ |
-| Error never crash | Every handler `Result` → red Error pane + fallback | ✅ |
-| Logging | `~/.cache/tui-preview/debug.log` with `RUST_LOG=debug` | ✅ |
-| Help `?` | Fullscreen overlay with all binds + handler caps | ✅ |
-| Version `V` | Show build features + term caps | ✅ |
+| dir summary `42 entries 1.2GB` largest | ✅ |
+| `ignore` .gitignore | ✅ |
+| symlink `→` depth 10 red broken | ✅ |
+| `rwx` `4.2M` | ✅ |
+| **git badges** `M ? S` `gix` + **blame `B` diff `d` history** ★ | 🔜 `git` |
+| `notify` watch `watch` | 🔜 |
+| **archive VFS deep nav** ★ | 🔜 `archive-vfs` |
 
-## 13. Feature Flags Summary
+## 9. Cache / Perf killer
 
-| Flag | Adds | Binary | License |
-|---|---|---|---|
-| `default` | Pure Rust, archive+text/image/pdf-text/office/audio/meta, `memmap2` | ~10 MB | MIT |
-| `pdf-raster` | `pdfium-render` page raster (Apache-2.0, NOT mupdf AGPL) | +5 MB | Apache-2.0 |
-| `video` | `ffmpeg-next` thumb + metadata | +15 MB | Varies (FFmpeg) |
-| `watch` | `notify` file watcher | +0.5 MB | — |
-| `git` | `gix` git badges | +1 MB | — |
-| `full` | All above | ~25 MB | — |
+| Feature | Phase |
+|---|---|
+| two-tier 100 + 500MB | ✅ |
+| **quantized 8×4** no churn | ✅ |
+| **timeout 5s centralized + Wasm fuel + child kill** | ✅ |
+| **sized pool `(num_cpus/2).clamp`** | ✅ |
+| **memmap2 + SparseIndex lazy** | ✅ |
+| **simd / io_uring opts** | 🔜 |
+| `panic=unwind` kept | ✅ |
+| `Cargo.lock` committed | ✅ |
+| bench regression gate | 🔜 CI |
 
-Install choose:
+## 10. Config
 
-```powershell
-cargo install tui-preview                         # lightweight pure
-cargo install tui-preview --features pdf-raster    # + pdf images
-cargo install tui-preview --features video         # + video thumbs
-cargo install tui-preview --features full          # richest
-```
+| Key | Desc |
+|---|---|
+| `theme show_hidden preview_delay_ms` | ✅ |
+| `max_disk_mb mem_entries worker_threads` | ✅ |
+| `keys` remap | ✅ |
+| `truecolor` | ✅ |
+| `--init-config` | ✅ |
+| `daemon.socket idle_timeout_secs` | 🔜 |
+| `plugins.dir hot_reload fuel` | 🔜 wasm |
+| `store.history_size` | 🔜 |
+| `sandbox.strict` | 🔜 |
+| `ai.model` | 🔜 local-ai |
+| `TUI_PREVIEW_THEME` env | 🔜 |
 
-## 14. Non-Features (Explicitly Out of Scope v1)
+## 11. Integration ★
 
-- Video smooth playback (use `o` to launch mpv)
-- Document editing (preview only)
-- PDF annotation/zoom beyond 150 DPI
-- Office pixel-perfect layout
-- DRM/encrypted docs (show "encrypted" error)
+| Feature | Phase |
+|---|---|
+| `tui-preview [PATH]` cold/hot daemon aware | ✅ |
+| `--preview <file>` fzf headless CBOR/text | 🔜 |
+| **fzf `fzf --preview 'tui-preview --preview {}'`** | 🔜 |
+| **yazi/ranger `preview` subcommand** | 🔜 |
+| **`--export-thumbs` + `--preview` + `--bench` CI batch** | 🔜 |
+| **hex `H` + arboard copy + mouse bridge** | 🔜 |
+| **`$EDITOR e`** text jump | 🔜 vs `o` mpv |
+| **local AI `candle` summarize/explain/semantic search** ★ | 🔜 `local-ai` |
+| SSH headless Sixel degrade | ✅ |
 
-All decisions keep **lightweight + fast + working** — rich preview, not editor.
+## 12. Polish
 
-## 15. Feature Dependency Graph
+| Feature | Phase |
+|---|---|
+| truecolor/unicode | ✅ |
+| Error never crash — child/Wasm trap → red pane | ✅ |
+| debug.log + Redux event replay file | ✅ |
+| help `?` caps + time-travel `Ctrl+Shift+T` | 🔜 |
+| version `V` features | ✅ |
+
+## 13. Flags v2
+
+| Flag | Adds | Size |
+|---|---|---|
+| `default` | ~10MB pure | 10 |
+| `pdf-raster` | pdfium Apache child-isolate | +5 |
+| `video` | ffmpeg child-isolate | +15 |
+| `watch` git | notify, gix |  |
+| `daemon` | interprocess `<5ms` | +1 |
+| `wasm` / `wasm-extism` | wasmtime/extism plugins | +3 |
+| `tree-sitter` | AST folding/gd | +2 |
+| `simd` | simd-json/utf8 |  |
+| `io-uring` | tokio-uring Linux |  |
+| `local-ai` | candle local LLM | +20 |
+| `clipboard` | arboard |  |
+| `archive-vfs` | sevenz |  |
+| `hex` `sandbox` `exif` | — |  |
+| `full` | all above minus ai/uring/sandbox | ~25 |
+| `full-ai` | + ai+uring+sandbox | ~45 |
+
+## 14. Non-features
+
+Video smooth 60fps (flipbook 15fps), doc edit, PDF annotate >150DPI, Office pixel layout, DRM.
+
+## 15. Graph v2
 
 ```
-FileList + Router (must, with centralized 5s timeout + quantized cache)
-  ├─ ImageHandler (must, easiest win) + EXIF panel
-  ├─ Text/Csv/Md (must, memmap2 for large)
-  ├─ ArchiveHandler (must, cheap via zip/tar)
-  ├─ Pdf text (must) ── Pdf raster via pdfium-render (opt, Apache-2.0)
-  ├─ Office (must text, zip+quick-xml pptx) (no pptx-rs)
-  ├─ Audio meta+play (must)
-  └─ Video meta (must) ── Video thumb via ffmpeg-next (opt)
-Cache (must, sized pool + quantized keys)
-Term Graphics (must fallback half-block)
-Search (must) + Git badges (opt) + Dir du (opt) + $EDITOR jump
+Store(Redux)+Daemon(hot)+Router(5s+child+Wasm) must
+  ├─ Image+EXIF
+  ├─ Text tree-sitter lazy + simd json
+  ├─ Archive VFS
+  ├─ Pdf child-isolated
+  ├─ Office zip+quick-xml
+  ├─ Audio rodio play
+  ├─ Video flipbook child
+  ├─ Hex editor
+  ├─ AI semantic
+Cache quantized + sized + memmap2
+Term mouse+clipboard half-block
+FS VFS + git blame + du
 ```
-
-Build in that order — see PHASEWISEPLAN.md.

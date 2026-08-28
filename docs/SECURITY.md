@@ -1,114 +1,107 @@
-# SECURITY.md — Hardening & Limits (Pure Rust)
+# SECURITY.md — Stable & Secure — Process Isolation + OS Sandbox + Fuzz
 
-> **Review fixes:** `panic="abort"` removed, `mupdf` (AGPL-3.0) banned, `Cargo.lock` committed, `cargo deny` AGPL ban, catch_unwind preserved.
+> Review kept: `panic=unwind` (not `abort`), `mupdf` AGPL banned → `pdfium-render`, `Cargo.lock` committed, 5s centralized, `catch_unwind`. v2 adds: **child-process isolation for C segfaults (crucial)**, Landlock/Seatbelt/Pledge sandbox per worker, Wasm fuel/trap, `cargo-fuzz` per handler.
 
 ## 1. Threat Model
 
-tui-preview opens untrusted files from disk, possibly from `Downloads`, `SSH`, `CI artifacts`, `ML outputs`. Threats:
+Open untrusted Downloads/SSH/CI artifacts — zip bomb, malformed pdf/image/svg/office causing OOM or panic *or C segfault*, filename injection, symlink loop, XML XXE.
 
-- Crafted image/svg/pdf/office that triggers decompression bomb, parser OOM, or panic.
-- Malicious filename with shell injection if shelling out (we don't).
-- Symlink loop, zip bomb, XML entity expansion.
-- Sensitive data exposure via cache.
+## 2. Pure Rust + Child Isolate Hybrid
 
-Non-goals: not a sandbox for actively malicious payloads like a browser; out-of-scope to survive targeted exploit of parser CVEs, but we bound impact.
+- **No `Command::new` in core** except `open::that` (user `o`/`e`) + **isolated child** `tui-preview --isolated-child` — `clippy.toml` allows only these.
+- **Rust handlers** (image, text, office zip, archive) stay in-process, guarded by `catch_unwind` in `Router::dispatch` (requires `panic=unwind`, kept).
+- **C/C++ handlers** (`pdfium-render` C++, `ffmpeg-next` C) **never run in daemon address space** — spawned as `tokio::process::Child`, CBOR `PreviewResult` via stdout pipe. Segfault / `SIGSEGV` / `SIGABRT` → child exits non-zero, parent `wait()` detects, returns `Error("isolated preview crashed")`, daemon stays alive.
+  - **Why crucial:** `catch_unwind` catches Rust panics only. C memory corruption is a **segfault signal**, not a panic — it would have killed the whole TUI before v2. Child isolation is the fix.
+  - Pure Rust fallback still text-only PDF without `pdf-raster` — no child needed.
+- **Wasm plugins** isolated per `wasmtime::Store` — fuel-bound, trap → drop instance, parent untouched.
 
-## 2. Pure Rust = Reduced Attack Surface
+## 3. Panic Safety (kept)
 
-- **No `Command::new`** in core (`clippy.toml` disallowed) → no shell injection via filename like `"; rm -rf"`.
-- Only `open` crate spawns `open::that(path)` for `o` key, with sanitized `Path::canonicalize` + allow-list check `path.exists()`.
-- No `unsafe` except inside vetted feature-gated bindings (`ffmpeg-next`, `pdfium-render` — both audited). **No `mupdf`**: removed because MuPDF is AGPL-3.0, which would contaminate the whole binary and violate the next section.
-- License hygiene: **`cargo deny` bans `AGPL`/`GPL` copyleft** (see §7). The prior `mupdf` dep would have failed this ban — fixed by replacing with `pdfium-render` (Apache-2.0).
+`Cargo.toml` keeps `panic=unwind` (~200KB cost). `Router::dispatch`: `catch_unwind(AssertUnwindSafe(...))` + `timeout(5s)`. Malformed Rust files degrade to red `Error` pane, never crash daemon.
 
-## 3. Panic Safety — `panic="unwind"` Kept (CRITICAL FIX)
+## 4. OS-Level Sandboxing per Worker ★ NEW
 
-**Before (broken):** `Cargo.toml` had `[profile.release] panic = "abort"`. With `abort`, the compiler disables unwinding — `std::panic::catch_unwind` inside `spawn_blocking` (see `src/preview/mod.rs` `Router::dispatch`) **cannot catch anything**. Any malformed PDF/DOCX/image that panics would hard-crash the entire process, contradicting the "never panic on user file" guarantee.
+| OS | Mechanism | When |
+|---|---|---|
+| Linux 5.13+ | `landlock` crate — restrict after `open(path)` to `read(cache) write(thumbs)` only, `ABI V1-3` | child process post-open |
+| macOS | `seatbelt`/`sandbox-exec` profile deny net, deny write outside `~/Library/Caches` | child process |
+| OpenBSD | `pledge("stdio rpath wpath cpath")` / `unveil(cache, "rwc")` | child process |
+| Fallback | soft-fail, `warn!("sandbox unavailable, continuing unsandboxed")` | older kernels |
 
-**After (fixed):** `panic = "abort"` removed from `Cargo.toml`. Profile now uses Rust default `panic = "unwind"`; the ~200KB binary size cost is worth crash safety. `Router::dispatch` wraps every handler in:
+Sandbox applied **after** allowed `open()` — worker physically cannot `open("/etc/passwd")` even if bug redirects. Config `sandbox.strict=true` (default) enforces; `false` logs only.
 
-```rust
-std::panic::catch_unwind(AssertUnwindSafe(|| handler.preview(...)))
-tokio::time::timeout(Duration::from_secs(5), ...)
-```
+Wasm sandbox: no WASI `fd_read` outside cache, linear memory isolated.
 
-Malformed files degrade to `PreviewResult::Error { msg: "handler panicked" }` red pane + fallback, never crash. This is the correct design for a tool that parses untrusted files by design.
+## 5. Centralized Timeout + Fuel
 
-## 4. Size & Depth Limits — `src/preview/mod.rs:25` + per handler
+- Rust/C: `tokio::time::timeout(Duration::from_secs(5), child.wait())` in `Router::dispatch` — cannot forget per handler. Wasm: `Store::set_fuel(10_000_000)` + `epoch_deadline 5s` → trap.
+
+## 6. Limits (kept + hardened)
 
 | Guard | Value | On Exceed |
 |---|---|---|
-| `max_image_mb` | 50 MB default (config) | Return `Error TooLarge`, require Enter to force |
-| `max_pdf_bytes` | 100 MB | Same, + warn in status |
-| `max_text_bytes` | 2 MB | Truncate + "… +N bytes" (via `memmap2` mmap, not `read` copy) |
-| `max_text_lines` | 5000 | Truncate |
-| `max_xlsx_rows` | 100 per sheet view | "+N rows" hint, not load all |
-| Image dimensions | 10000 × 10000 | Reject `Error("image too large")` |
-| SVG depth / nodes | 100 depth, 50000 nodes | `usvg` limit, Error |
-| ZIP/Archive entries (docx/xlsx/pptx/zip/tar) | 10000 | Reject bomb, `zip` crate limit |
-| Symlink follow depth | 10 | Break + show as link |
-| Decompression ratio | 100:1 (e.g., 1KB zip → max 100KB) | Abort |
-| Worker decode timeout | **5 s wall-clock enforced centrally in `Router::dispatch`** | `tokio::time::timeout` → `Error("timed out")` |
+| `max_image_mb` 50MB, `max_pdf_bytes` 100MB | default | `Error TooLarge` Enter to force |
+| `max_text_bytes` 2MB + `memmap2` | viewport O(viewport) | truncate, `SparseIndex` avoids full alloc |
+| `max_text_lines` 5000 | viewport 80 | truncated |
+| `max_xlsx_rows` 100, zip entries 10k, ratio 100:1 | — | `Error` |
+| image 10000×10000, SVG depth 100 nodes 50k, XXE disabled | — | `Error` |
+| symlink depth 10, archive dive no extract | — | link text |
+| Wasm fuel 10M, child 5s | — | trap / kill |
+| `deny.toml` bans `AGPL/GPL` | `mupdf` would fail | pdfium Apache-2.0 passes |
 
-All limits configurable down via `config.toml`, not up beyond hard caps (hard caps in code). Timeout is now centralized in the router, not per-handler, so new handlers can't forget it.
+## 7. Fuzzing ★ NEW (only way to guarantee stability)
 
-## 5. Parser Hardening per Format
-
-| Handler | Crate | Hardening |
-|---|---|---|
-| image | `image` | `image::load_from_memory_with_format` checks magic, `limit_dimensions` enabled, resize bounded, quantized cache key |
-| svg | `resvg`+`usvg` | `usvg::Options { limit: 50000, dpi: 96 }`, XXE disabled |
-| pdf text | `lopdf` | `Document::load` with `bytes.len() < 100MB`, `pdf-extract` per page, `catch_unwind` in `Router::dispatch` |
-| pdf raster | **`pdfium-render` (was `mupdf`)** | Apache-2.0 `pdfium-render`, timeout 5s, no AGPL |
-| docx | `docx-rs` | zip bomb guard, `zip::read::ZipArchive` size check |
-| pptx | **`zip`+`quick-xml` (was `pptx-rs`)** | In-house extractor, abandoned crate removed; limits on slide XML size |
-| xlsx | `calamine` | Streaming `worksheet_range_at`, not full workbook load |
-| archive (zip/tar) | `zip`, `tar`+`flate2` | Entries 10k limit, ratio 100:1, no extraction |
-| csv | `csv` | `ReaderBuilder::flexible(true).trim(Trim::All)`, sniff first 512B delimiter |
-| audio | `symphonia` | Probe limits duration 6h max, waveform decode only 30s |
-| video | `ffmpeg-next`/`mp4` | Timeout 5s centralized, throttled to 1 frame |
-| text | `memmap2` | Mmap large files, binary guard `content_inspector` |
-
-## 6. Panic & Unwind Safety (Preserved)
-
-```rust
-// In Router::dispatch (centralized):
-match tokio::time::timeout(Duration::from_secs(5), spawn_blocking(|| {
-    std::panic::catch_unwind(AssertUnwindSafe(|| handler_inner(path)))
-})).await {
-    Ok(Ok(Ok(Ok(v)))) => v,
-    Ok(Ok(Ok(Err(e)))) => PreviewResult::Error{msg: e.to_string(), …},
-    Ok(Ok(Err(_))) => PreviewResult::Error{msg: "handler panicked, file a bug", …},
-    Ok(Err(_)) => PreviewResult::Error{msg: "task join error", …},
-    Err(_) => PreviewResult::Error{msg: "preview timed out (5s)", …},
-}
+```
+fuzz/
+  fuzz_targets/
+    image.rs    // image::load_from_memory fuzz
+    pdf.rs      // lopdf + pdf-extract
+    office.rs   // docx-rs + calamine + pptx quick-xml
+    archive.rs  // zip/tar/sevenz
+    audio.rs    // symphonia probe
+  corpus/       // seeded from fixtures/
 ```
 
-UI never crashes on malformed file; logs `tracing::error!("panic in {} for {}", handler, path)`. This only works because `panic="abort"` was removed.
+```powershell
+cargo install cargo-fuzz
+cargo fuzz run image -- -max_total_time=120
+cargo fuzz run pdf   -- -max_total_time=120
+# CI: nightly -> cargo fuzz run -- --max_total_time=30 per target, artifact on crash
+```
 
-## 7. Cache Privacy & Supply Chain — Lock File Committed (FIXED)
+Crashes stored `fuzz/artifacts/<target>-<hash>` and reproducible `cargo fuzz run <target> fuzz/artifacts/...`.
 
-- Cache path `~/.cache/tui-preview/thumbs/<sha>.png` contains derived thumbnails only, not original bytes. Files `0600` on Unix, default ACL on Windows. `tui-preview --clear-cache` deletes all.
-- No network; no telemetry.
-- **Cargo.lock COMMITTED:** `.gitignore` fixed to NOT ignore `Cargo.lock`. For a binary crate (not library), committing `Cargo.lock` is correct — it locks transitive deps for `cargo audit`/`cargo deny` and reproducible CI. The prior `.gitignore` excluded it, contradicting this section — fixed.
-- Supply: `cargo deny check` bans `GPL`/**`AGPL`** crates (would have caught `mupdf`), duplicate crates, unmaintained; `cargo audit` runs in CI on every push, fails on `RUSTSEC`. `Cargo.lock` committed, `cargo update` reviewed.
+## 8. Panic & Unwind Safety
 
-## 8. Reporting Vulnerabilities
+```rust
+match timeout(5s, spawn_blocking(|| catch_unwind(|| handler_inner()))).await {
+  Ok(Ok(Ok(Ok(r)))) => r,
+  Ok(Ok(Ok(Err(e)))) => Error(e),
+  Ok(Ok(Err(_))) => Error("handler panicked"),
+  Ok(Err(e)) => Error(format!("join {e}")),
+  Err(_) => Error("timed out"),
+}
+ // C path: match timeout(5s, Command::new(current_exe).arg("--isolated-child") ... wait()).await
+ // non-zero exit → Error("isolated preview crashed (segfault)")
+```
 
-File issue with `RUSTSEC` reference, include `RUST_LOG=debug` log + fixture file hashed (not raw if sensitive).
+## 9. Supply Chain (kept)
 
-## 9. Windows-Specific
+- `Cargo.lock` committed (binary), `cargo deny` bans `AGPL`, `cargo audit` RUSTSEC, all in `.github/workflows/ci.yml` from day one.
+- `landlock` audited, `wasmtime` sandboxed.
 
-- `crossterm` raw mode restores on panic via `Drop` guard, so terminal not left broken.
-- No `unsafe` direct Win32 `CreateProcess`; `open` crate uses `ShellExecuteW` safely.
+## 10. New Handler Checklist v2
 
-## 10. Checklist for New Handler
+- [ ] Size check before `mmap`/`read`
+- [ ] Depth/entries 10k, SVG 100, ratio 100:1
+- [ ] If C/C++ → must go via `sandbox::isolated::spawn` child, not in-process
+- [ ] If Rust → centralized `Router::dispatch` gives timeout+unwind, no duplicate
+- [ ] If Wasm → fuel + WIT CBOR, no WASI fs outside cache
+- [ ] Apply `sandbox::apply_restrictions(cache_dir)` after open in child
+- [ ] Add `fuzz/fuzz_targets/<name>.rs` + corpus from `fixtures/`
+- [ ] `deny.toml` still bans AGPL; no `mupdf`
+- [ ] Redux action serializable for replay
 
-- [ ] Size limit check before `read`/`mmap`.
-- [ ] Depth/entries bound (10k zip, 100 SVG depth).
-- [ ] Relies on centralized `Router::dispatch` timeout + `catch_unwind` — do NOT duplicate.
-- [ ] Returns `Result`, never `unwrap` on file bytes.
-- [ ] `deny.toml` bans AGPL — don't introduce copyleft.
-- [ ] Added to `cargo-fuzz` target (future) + `insta` golden test.
+## 11. Windows Note
 
-This keeps **working + efficient + safe** — bounded, pure Rust, panic-safe, AGPL-free, lock-committed.
-
+Child isolation via `tokio::process::Command` uses `CreateProcess` + named pipe `\\.\pipe\...`; `EstimateToken` sandbox via `JobObject` limit + `integrity` low — Landlock path Linux-only, Windows falls back to JobObject.

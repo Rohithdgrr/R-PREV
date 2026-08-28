@@ -1,17 +1,17 @@
 [package]
 name = "tui-preview"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Pure Rust TUI universal file previewer - lightweight, fast, cached, keyboard-driven"
+description = "Pure Rust TUI universal file previewer — Native App Killer: daemon <5ms, Wasm plugins, tree-sitter, SIMD, isolated C, sandboxed"
 license = "MIT"
 authors = ["VIJAY"]
 repository = "https://github.com/Rohithdgrr/R-PREV"
-keywords = ["tui", "preview", "ratatui", "file-manager"]
+keywords = ["tui", "preview", "ratatui", "file-manager", "daemon", "wasm"]
 categories = ["command-line-utilities"]
 readme = "README.md"
 
 [dependencies]
-# UI + Runtime - trimmed tokio features (no net/signal/process) for lightweight binary
+# UI + Runtime — trimmed tokio (no net/signal/process) + daemon IPC
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "fs"] }
@@ -19,12 +19,15 @@ clap = { version = "4.5", features = ["derive"] }
 directories = "5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+rmp-serde = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 num_cpus = "1.16"
+interprocess = { version = "2.2", optional = true }
+arboard = { version = "3.4", optional = true }
 
-# FS + Search
+# FS + Search + VFS + io_uring
 walkdir = "2"
 ignore = "0.4"
 mime_guess = "2"
@@ -35,51 +38,75 @@ hex = "0.4"
 lru = "0.12"
 notify = { version = "6", optional = true }
 memmap2 = "0.9"
+memchr = "2"
+tokio-uring = { version = "0.5", optional = true }
+sevenz-rust = { version = "0.6", optional = true }
 
-# Text / CSV / Markdown
+# Text / Code — syntect fallback + tree-sitter AST + SIMD fast path + hex
 syntect = "5"
+tree-sitter = { version = "0.24", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+# dummy to silence feature check — tree-sitter is enabled via the `tree-sitter` feature below
+simd-json = { version = "0.14", optional = true }
+simdutf8 = { version = "0.1", optional = true }
 csv = "1"
 comfy-table = "7"
 pulldown-cmark = "0.12"
 encoding_rs = "0.8"
 content_inspector = "0.2"
 
-# Images (pure Rust)
+# Images
 image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp"] }
 resvg = "0.43"
 usvg = "0.43"
+little_exif = { version = "0.6", optional = true }
 
-# PDF - pure Rust text extraction; raster via pdfium-render (Apache-2.0, not AGPL)
-# NOTE: mupdf removed - it is AGPL-3.0 and conflicts with MIT license + cargo deny policy
+# PDF — pdfium Apache-2.0 child-isolated (mupdf AGPL banned)
 lopdf = "0.35"
 pdf-extract = "0.8"
 pdfium-render = { version = "0.8", optional = true }
 
-# Office (pure Rust) - docx/xlsx via crates, pptx via zip+quick-xml (pptx-rs is abandoned)
+# Office — docx-rs + calamine + in-house pptx zip+quick-xml (pptx-rs abandoned)
 docx-rs = "0.4"
 calamine = "0.26"
 zip = "2"
 quick-xml = "0.36"
 
-# Archive preview (uses existing zip)
+# Archive VFS
 tar = "0.4"
 flate2 = "1"
 
-# Audio (pure Rust)
+# Audio — pure Rust in-process
 symphonia = { version = "0.5", features = ["all"] }
 lofty = "0.22"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
 hound = "3"
 
-# System open (only Command spawn allowed, for `o` key)
+# System open
 open = "5"
 
-# Video — feature-gated (pure Rust header vs ffmpeg binding)
+# Video — header pure vs ffmpeg child-isolated
 ffmpeg-next = { version = "7", optional = true }
 mp4 = { version = "0.14", optional = true }
 
-# Git-aware file badges (pure Rust, no binary)
+# Git — blame/diff/badges
 gix = { version = "0.66", optional = true, default-features = false, features = ["status"] }
+
+# Wasm plugin runtime — sandboxed, trap-isolated
+wasmtime = { version = "32", optional = true }
+extism = { version = "1", optional = true }
+wit-component = { version = "0.231", optional = true }
+
+# Local AI — optional heavy
+candle-core = { version = "0.8", optional = true }
+candle-transformers = { version = "0.8", optional = true }
+
+# OS sandbox (Linux Landlock)
+landlock = { version = "0.4", optional = true }
+
+# Helpers
 anyhow = "1.0.104"
 futures = "0.3.34"
 directories-next = "2.0.0"
@@ -87,20 +114,31 @@ tokio-util = "0.7.19"
 
 [features]
 default = []
-# pdf-raster now uses pdfium-render (Apache-2.0) not mupdf (AGPL-3.0)
 pdf-raster = ["pdfium-render"]
 video = ["ffmpeg-next"]
 video-pure = ["mp4"]
 watch = ["notify"]
 git = ["gix"]
-full = ["pdf-raster", "video", "watch", "git"]
+daemon = ["interprocess"]
+wasm = ["wasmtime", "wit-component"]
+wasm-extism = ["extism"]
+tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-rust", "dep:tree-sitter-python", "dep:tree-sitter-javascript"]
+simd = ["simd-json", "simdutf8"]
+io-uring = ["tokio-uring"]
+local-ai = ["candle-core", "candle-transformers"]
+hex = []
+clipboard = ["arboard"]
+archive-vfs = ["sevenz-rust"]
+exif = ["dep:little_exif"]
+sandbox = ["landlock"]
+full = ["pdf-raster", "video", "watch", "git", "daemon", "wasm", "tree-sitter", "simd", "clipboard", "archive-vfs", "hex", "exif"]
+full-ai = ["full", "local-ai", "io-uring", "sandbox"]
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-# panic = "abort" REMOVED — must keep unwind so catch_unwind in spawn_blocking works
-# See SECURITY.md §5 and review: abort disables catch_unwind and crashes on malformed files
+# panic=unwind kept (~200KB) — catch_unwind for Rust panics; C segfaults via child isolation
 opt-level = 3
 
 [profile.release-with-debug]
@@ -110,5 +148,3 @@ debug = 1
 
 [lints.clippy]
 disallowed_methods = "deny"
-
-# cargo clippy will read clippy.toml for disallowed-methods list (Command::new)

@@ -1,213 +1,173 @@
-# TECH-STACK.md — Pure Rust Stack (Lightweight, Fast, Efficient)
+# TECH-STACK.md — Pure Rust Stack — Native App Killer v2
 
-> Constraint: **PURELY RUST**. No `std::process::Command` to `ffmpeg/soffice/pdftoppm` in core. Single binary via `cargo build --release`. All heavy lifting via crates.
-> **Review fixes applied:** `panic="abort"` removed, `mupdf` (AGPL-3.0) replaced, `pptx-rs` (abandoned) replaced, `tokio full` trimmed, `notify` + `memmap2` + `quick-xml` added.
+> **Core stays pure Rust single-binary.** v2 adds are **additive optional features** — daemon, Wasm, tree-sitter, SIMD, io_uring, local AI, hex, mouse/clipboard. Default build still ~10 MB pure; `full` + all opts ~35 MB. Bad deps still banned (AGPL).
 
-## 1. Stack Philosophy
+## 1. Stack Philosophy — v2
 
-- **Zero shell-out core** → Windows/macOS/Linux identical, no missing binary errors, SSH-safe.
-- **Lean binary** → default ~10 MB, `full` ~25 MB. No Electron, no Python runtime.
-- **Async + cached + quantized + timed** → UI never blocks, decode off main thread, single timeout enforcement.
-- **Batteries included** → each format has a pure Rust parser/decoder.
+- **Zero shell-out core** kept + daemon IPC via `interprocess` (pure Rust, no `Command` of external binaries).
+- **Instant:** daemon `<5ms` hot vs `60ms` cold — pre-warmed `Cache`/`SyntaxSet`/`WasmStore`.
+- **Extensible without recompile:** Wasm (`wasmtime`/`extism`) sandbox — user `.wasm` plugins in Python/JS/Rust, trap-isolated.
+- **Intelligent:** `tree-sitter` AST vs `syntect` regex; `simd-json`/`simdutf8` vs `serde_json`.
+- **Stable:** `catch_unwind` for Rust + **child-process isolation for C** (`pdfium`/`ffmpeg` segfault → parent survives).
+- **Lean default:** trimmed `tokio` (`rt, rt-multi-thread, macros, time, sync, fs`), `panic=unwind` kept, `full` pulls heavy opts only when asked.
 
-## 2. Core Dependencies — `Cargo.toml:1`
+## 2. Core Dependencies — `Cargo.toml:1` — delta vs v1
 
-### 2.1 Runtime & UI (The Shell)
+### 2.1 Runtime & UI — + daemon IPC + Redux + mouse
 
-| Crate | Version | Role | Why Chosen |
+| Crate | Ver | Role | Feature |
 |---|---|---|---|
-| `ratatui` | 0.29 | TUI framework | Industry standard, double-buffered, 0 deps |
-| `crossterm` | 0.28 | Terminal I/O | Cross-platform, Windows ConHost + VT support |
-| `tokio` | 1.0 `rt, rt-multi-thread, macros, time, sync, fs` | Async runtime | Trimmed from `full` — no net/signal/process (saves binary size + compile time) |
-| `directories` | 5.0 | XDG paths | Config `~/.config/tui-preview`, cache `~/.cache/tui-preview` |
-| `num_cpus` | 1.16 | Pool sizing | `(get()/2).clamp(2,6)` workers |
-| `serde` + `toml` | 1.0 / 0.8 | Config | TOML config parsing |
-| `thiserror` | 2.0 | Error handling | Typed errors per handler |
-| `clap` | 4.5 `derive` | CLI args | `tui-preview [PATH] [--theme dark]` |
-| `tracing` + `tracing-subscriber` | 0.1 | Logging | File log `~/.cache/tui-preview/debug.log` |
+| `ratatui` | 0.29 | TUI | default |
+| `crossterm` | 0.28 + `event-stream` | I/O + mouse `EnableMouseCapture` | default |
+| `tokio` | `rt, rt-multi-thread, macros, time, sync, fs` | trimmed runtime — was `full` (fixed) | default |
+| `interprocess` | 2.2 | Unix socket / Named Pipe IPC daemon/client | `daemon` |
+| `serde` + `toml` + `rmp-serde` | 1 / 0.8 / 1 | config + IPC CBOR | default |
+| `num_cpus` | 1.16 | pool `(get/2).clamp(2,6)` | default |
+| `thiserror` | 2 | typed errors | default |
+| `clap` | 4.5 `derive` | `tui-preview [--daemon| PATH| --isolated-child]` | default |
+| `tracing` | 0.1 | file log `~/.cache/tui-preview/debug.log` + Redux event log | default |
+| `arboard` | 3.4 | clipboard `set_text`/`set_image` (x11/wayland/win/macos) | `clipboard` |
+| `directories-next` | 2 | cache/config dirs (Linux XDG) | default |
 
-> Fix: `tokio full` → trimmed list. Never needed `net`, `signal`, `process`, `io-util` for a TUI previewer.
+### 2.2 Filesystem — + VFS + io_uring
 
-### 2.2 Filesystem & Search
-
-| Crate | Role | Notes |
+| Crate | Role | Feature |
 |---|---|---|
-| `walkdir` 2.5 | Recursive dir listing, sorted |  |
-| `ignore` 0.4 | .gitignore respect |  |
-| `mime_guess` 2.0 | Extension → MIME |  |
-| `infer` 0.19 | Magic bytes detection (first 512B) |  |
-| `nucleo-matcher` 0.3 | Fuzzy search (like fzf, pure Rust, fast) |  |
-| `notify` 6.1 **optional (`watch` feature)** | File watcher | Fix: was missing from Cargo.toml despite ARCHITECTURE.md; now `watch` feature gated |
-| `sha2` 0.10 | Cache key hashing (quantized area) |  |
-| `memmap2` 0.9 | Zero-copy large text via `Mmap` | Fix: added for SSH log-tailing |
-| `gix` 0.66 **optional (`git` feature)** | Git-aware badges | New: modified/staged badges |
+| `walkdir` 2 + `ignore` 0.4 | listing | default |
+| `mime_guess` 2 + `infer` 0.19 | MIME + magic | default |
+| `nucleo-matcher` 0.3 | fzf-like search | default |
+| `notify` 6 **optional** | watcher | `watch` (fixed) |
+| `memmap2` 0.9 | zero-copy large text | default |
+| `tokio-uring` 0.5 | Linux `io_uring` dir walk + mmap prefault zero-copy NVMe | `io-uring` (Linux only) |
+| `sha2` + `hex` + `lru` | cache key + LRU | default |
+| `gix` 0.66 optional | git badges/blame/diff | `git` |
+| `sevenz-rust` 0.6 optional | 7z VFS read | `archive-vfs` |
+| `tar` 0.4 + `flate2` 1 + `zip` 2 + `quick-xml` 0.36 | archive VFS | default (tar/zip) |
 
-### 2.3 Image Preview (Pure Rust)
+### 2.3 Text / Code — + simd + tree-sitter + lazy viewport
 
-| Crate | Handles | Notes |
-|---|---|---|
-| `image` 0.25 `png,jpeg,gif,webp,bmp` | Raster images | Decode + resize via `imageops::Lanczos3` |
-| `resvg` 0.43 + `usvg` | SVG | Rasterize SVG to RGBA, then same pipeline |
-| `viuer` 0.9 **or custom** `term::graphics` | Kitty/Sixel/iTerm2 | Abstraction; we implement custom for control (see ARCHITECTURE.md) |
-| `webp` 0.3 | WebP fallback | If `image` webp insufficient |
+| Crate | Role | Feature | Replaces |
+|---|---|---|---|
+| `syntect` 5 | regex highlight fallback | default | — |
+| `tree-sitter` 0.24 + `tree-sitter-rust` etc | AST highlight, folding, `gd` jump | `tree-sitter` | upgrades syntect |
+| `simd-json` 0.14 + `simdutf8` 0.1 | 3-10× JSON/log parse, utf8 validate | `simd` | upgrades serde_json |
+| `csv` 1 + `comfy-table` 7 | CSV table + `SparseIndex` lazy viewport | default | — |
+| `pulldown-cmark` 0.12 | markdown | default | — |
+| `encoding_rs` 0.8 + `content_inspector` 0.2 | charset + binary guard | default | — |
+| `memmap2` + `memchr` 2 | sparse line index `offsets: Vec<usize>` → only viewport decoded | default | — |
+| `hexyl` 0.12 style (`hex` crate) | hex dump view read-only | `hex` feature | — |
 
-Performance: Resize to `quantized_area.width*2 × height*2` before terminal render → half-block doubles vertical resolution. Cache key quantized (8 cols × 4 rows) so resize-by-pixel doesn't churn.
-
-### 2.4 Text / CSV / Markdown (Pure Rust)
+### 2.4 Image — + EXIF
 
 | Crate | Role |
 |---|---|
-| `syntect` 5.2 | Syntax highlighting (100+ langs), pure Rust, TextMate grammars |
-| `csv` 1.3 | CSV parse + `comfy-table` 7.1 for table widget |
-| `pulldown-cmark` 0.12 | Markdown → styled Ratatui lines |
-| `encoding_rs` 0.8 | Charset detection (UTF-8, Windows-1252) |
-| `content_inspector` 0.2 | Binary vs text detection |
-| `memmap2` 0.9 | Large file mmap (avoid read+copy) — NEW |
+| `image` 0.25 + `resvg` 0.43 `usvg` | raster + SVG |
+| `little_exif` / `kamadak-exif` 0.3 | EXIF panel `x` (GPS, camera) — `exif` feature |
 
-### 2.5 PDF (Pure Rust — Tradeoff Documented) — FIXED
+### 2.5 PDF — fix kept: pdfium (Apache-2.0)
 
-| Option | Purity | License | Quality | Choice |
-|---|---|---|---|---|
-| `lopdf` 0.35 + `pdf-extract` 0.8 | 100% pure | MIT/Apache | Text extraction excellent, raster none | **Use for text (default)** |
-| `pdfium-render` 0.8 | C++ binding (pdfium) | **Apache-2.0** | Best fidelity, 150 DPI | **Feature `pdf-raster` — CORRECT** |
-| `mupdf` 0.4 | C binding | **AGPL-3.0** | High-quality | **REMOVED** — AGPL conflicts with MIT + cargo deny ban |
-| `hayro` 0.2 (experimental) | 100% pure Rust | MIT | Early, limited | Future |
-
-**Fix:** `mupdf` removed from `Cargo.toml` and all docs. It is AGPL-3.0 (MuPDF dual AGPL/commercial) — shipping a binary with `pdf-raster` would taint the whole binary with AGPL obligations, violating your MIT license and `cargo deny` policy that bans GPL/AGPL. Replaced with `pdfium-render` (Google PDFium, Apache-2.0, permissive). `pdfium-render` is still a C++ binding (not 100% pure Rust) — docs now honestly call `pdf-raster`/`full` "Rust + pdfium C++ lib", not "pure Rust".
-
-**v1 Strategy:** Default = `lopdf` text + optional `pdfium-render` raster behind `pdf-raster` feature. Without feature → text-only PDF + metadata (page count via `lopdf`).
-
-### 2.6 Office Documents (Pure Rust) — FIXED
-
-| Crate | Format | Capability |
+| Crate | Role | Feature |
 |---|---|---|
-| `docx-rs` 0.4 | DOCX | Paragraphs, tables, headings → Ratatui text |
-| `calamine` 0.26 | XLSX, XLS, ODS | Sheets → `comfy-table`, streaming, no full load |
-| `zip` 2.2 + `quick-xml` 0.36 | **PPTX** | **NEW: in-house PPTX extractor** — slide titles/text runs via zip+quick-xml, replaces `pptx-rs` |
-| `zip` 2.2 | All OOXML | Underlying zip (docx/pptx are zips) |
+| `lopdf` 0.35 + `pdf-extract` 0.8 | text | default |
+| `pdfium-render` 0.8 (Apache-2.0) | raster 150 DPI **child-isolated** | `pdf-raster` (was `mupdf` AGPL — removed) |
 
-**Fix:** `pptx-rs 0.1` removed — one release, 1,800 downloads, no repo, abandoned. PPTX is a zip of XML files (`ppt/slides/slide1.xml`); a minimal extractor with `quick-xml` is more maintainable than an orphaned crate and you already need `zip` for docx/xlsx. Handler `src/preview/office.rs` + new `pptx` sub-module now uses `zip` + `quick-xml`.
-
-No `libreoffice` headless; pure Rust parse is faster (no 1s LO startup) but loses pixel-perfect layout — acceptable for preview.
-
-### 2.6b Archive Preview (NEW — cheap, high value)
-
-| Crate | Format | Capability |
-|---|---|---|
-| `zip` 2.2 | ZIP | Entry list, sizes, compressed ratio |
-| `tar` 0.4 + `flate2` 1.0 | TAR, TAR.GZ | Same |
-
-New `src/preview/archive.rs` — entry table `Name | Size | Packed | Ratio` via existing `zip`; top Yazi/Ranger feature, close to free.
-
-### 2.7 Audio (Pure Rust — No mpv)
+### 2.6 Office/Archive
 
 | Crate | Role |
 |---|---|
-| `symphonia` 0.5 `all` | Decode mp3, flac, wav, ogg, m4a pure Rust |
-| `lofty` 0.22 | Tags: title, artist, album, duration, bitrate |
-| `rodio` 0.20 | Playback `Sink`, pause/resume, pure Rust (ALSA/CoreAudio/WASAPI) |
-| `hound` 3.0 | WAV helper |
+| `docx-rs` 0.4 + `calamine` 0.26 + `zip` + `quick-xml` | docx/xlsx + in-house pptx (was `pptx-rs` abandoned) |
+| `zip` + `tar`/`flate2` + `sevenz-rust` optional | archive listing + VFS without extract |
 
-Waveform: `symphonia` decode first 30s → downsample to 80 bars → Ratatui `Sparkline` widget.
+### 2.7 Audio/Video — isolated
 
-### 2.8 Video (Pure Rust Compromise)
-
-**Problem:** No production pure Rust H.264/H.265 decoder. Options:
-
-| Approach | Purity | Thumbnail | Chosen |
+| Crate | Role | Feature | Isolation |
 |---|---|---|---|
-| `ffmpeg-next` 7.1 | Rust binding → FFmpeg C libs | Full thumbnail + metadata | **Feature `video`** |
-| `mp4` 0.14 + `matroska` | Pure Rust header parse | Metadata only (no frame) | **Default fallback** |
+| `symphonia` 0.5 + `lofty` 0.22 + `rodio` 0.20 | audio meta+play | default | in-process (pure Rust, no segfault) |
+| `mp4` 0.14 | video header | default | in-process |
+| `ffmpeg-next` 7 | video thumbnail + flipbook frames | `video` | **child-isolated** (`--isolated-child`) |
 
-`Cargo.toml`:
+### 2.8 Wasm Plugin Runtime ★ NEW
+
+| Crate | Role | Feature | Benefit |
+|---|---|---|---|
+| `wasmtime` 32 + `wit-component` | Wasm execute Python/JS/Rust `.wasm` previewers, WIT `preview(path,area)->CBOR`, fuel+epoch timeout | `wasm` | recompile-free ext, trap-isolated |
+| `extism` 1 alternative | higher-level plugin SDK, PDK for Python/JS | `wasm-extism` | simpler authoring |
+
+WIT: `package tui:preview; interface preview { preview: func(path: string, area: record {w: u32, h: u32}) -> result<bytes, string> }` — bytes = CBOR `PreviewResult`.
+
+### 2.9 AI / Semantic (optional) ★ NEW
+
+| Crate | Role | Feature |
+|---|---|---|
+| `candle-core` + `candle-transformers` | local LLM/CPU summarize `summarize this PDF` | `local-ai` |
+| `llama-cpp-rs` alt | GGUF `mistral` local | `local-ai-llama` |
+| `hnswlib`/`instant-distance` | semantic embedding cosine search across dir | `local-ai` |
+
+Model `~/.cache/tui-preview/models/mistral.gguf` lazy download, CPU only default (GPU via `candle-cuda` optional).
+
+### 2.10 Security / Sandboxing ★ NEW
+
+| Crate | Role | Feature |
+|---|---|---|
+| `landlock` 0.4 | Linux Landlock restrict worker `READ(cache) WRITE(thumbs)` | `sandbox` (Linux) |
+| `cargo-fuzz` + `libFuzzer` | `fuzz/fuzz_targets/*.rs` per handler | dev `cargo fuzz` |
+| `wasmtime` fuel | Wasm timeout trap (no thread block) | `wasm` |
+
+### 2.11 Dev/Quality
+
+| Tool | Role |
+|---|---|
+| `clippy` `disallowed_methods` | bans `Command::new` except `open` + `isolated` child |
+| `cargo-deny` | bans `GPL/AGPL` — caught `mupdf` |
+| `cargo-audit` + `cargo bench` regression gate | CI |
+
+## 3. Feature Flags — v2 matrix
+
 ```toml
-ffmpeg-next = { version = "7", optional = true }
-mp4 = { version = "0.14", optional = true }
 [features]
-default = []
-video = ["ffmpeg-next"]
-video-pure = ["mp4"] # metadata only
+default = []                          # ~10 MB base: pure, syntect, simd off, no daemon, no wasm
+pdf-raster = ["pdfium-render"]        # +5 MB, Apache-2.0, child-isolated
+video = ["ffmpeg-next"]               # +15 MB, child-isolated
+video-pure = ["mp4"]
 watch = ["notify"]
 git = ["gix"]
-pdf-raster = ["pdfium-render"] # was ["mupdf"] — AGPL
-full = ["pdf-raster", "video", "watch", "git"]
-```
-If `video` feature enabled, `cargo build` statically links FFmpeg via `ffmpeg-sys-next` — still `cargo` build, no runtime binary needed. Documented build req: `cargo xwin` or `vcpkg` on Windows.
-
-### 2.9 Caching & Hashing
-
-| Crate | Role |
-|---|---|
-| `lru` 0.12 | In-memory LRU 100 entries |
-| `sha2` 0.10 | Key hash (quantized area) |
-| `num_cpus` 1.16 | Worker pool sizing |
-| `sled` OR `rusqlite` optional | Persistent cache index (v2); v1 uses filesystem + mtime |
-
-### 2.10 Dev & Quality
-
-| Crate/Tool | Role |
-|---|---|
-| `clippy` | `disallowed-methods = ["std::process::Command::new"]` enforces purity |
-| `rustfmt` | Formatting |
-| `cargo-deny` | License/ban audit — now correctly bans AGPL (would have caught mupdf) |
-| `cargo-audit` | CVE check |
-| `criterion` | Benchmarks `benches/preview.rs` |
-| `insta` | Snapshot tests for handlers |
-
-## 3. Why Pure Rust Beats Shell-Out
-
-| Criterion | Pure Rust (chosen) | Shell-out (rejected) |
-|---|---|---|
-| Windows support | Works, single binary | Requires `ffmpeg.exe` in PATH, fragile |
-| SSH headless | No deps to install | Need 5 binaries on server |
-| Startup | <80ms | +200ms per `Command::spawn` |
-| Security | No shell injection, bounded decode, `catch_unwind` works (kept `panic=unwind`) | RCE via crafted filenames, abort crashes |
-| Distribution | `cargo install` | Docker + apt-get parade |
-| Error handling | Typed `Result` | Stringly `stderr` parse |
-
-## 4. Binary Size & Performance Targets
-
-| Profile | Size | Startup | Cached Preview | Cold Image | Cold PDF |
-|---|---|---|---|---|---|
-| `default` (no video) | ~10 MB (strip+LTO, trimmed tokio) | 60-80 ms | <30 ms | <300 ms | <800 ms |
-| `--features full` | ~25 MB | 70-90 ms | <30 ms | <300 ms | + thumb 500 ms |
-
-Optimization: `Cargo.toml:profile.release lto=true, codegen-units=1, strip=true` — **`panic="abort"` removed** so `catch_unwind` in handlers works; the size cost of keeping unwind is ~200KB, worth it for crash safety on untrusted files.
-
-## 5. Feature Flags Matrix — `Cargo.toml:15`
-
-```toml
-[features]
-default = []                          # pure, no C libs, metadata-only video, no watcher
-pdf-raster = ["pdfium-render"]        # C++ pdfium (Apache-2.0), NOT mupdf AGPL
-video = ["ffmpeg-next"]               # C dep, thumbnails
-video-pure = ["mp4"]                  # pure header parse
-watch = ["notify"]                    # fs watcher
-git = ["gix"]                         # git badges
-full = ["pdf-raster", "video", "watch", "git"] # richest
+daemon = ["interprocess"]             # daemon/client IPC
+wasm = ["wasmtime", "wit-component"]   # or wasm-extism
+wasm-extism = ["extism"]
+tree-sitter = ["tree-sitter", "tree-sitter-rust", "tree-sitter-python"] # AST
+simd = ["simd-json", "simdutf8"]       # JSON/log fast path
+io-uring = ["tokio-uring"]            # Linux NVMe
+local-ai = ["candle-core", "candle-transformers"] # local LLM
+hex = []                              # hex view (built-in)
+clipboard = ["arboard"]
+archive-vfs = ["sevenz-rust"]         # +7z
+sandbox = ["landlock"]               # OS sandbox (Linux)
+full = ["pdf-raster", "video", "watch", "git", "daemon", "wasm", "tree-sitter", "simd", "clipboard", "archive-vfs", "hex"]
+full-ai = ["full", "local-ai", "io-uring", "sandbox"]
 ```
 
-Users choose trade-off. Docs explain each flag's build requirements.
+## 4. Why These Upgrades (benchmarks)
 
-## 6. Alternatives Rejected
+| Replaces | With | Gain | Cost |
+|---|---|---|---|
+| cold start 60ms | daemon hot <5ms | instant-native | 4 MB daemon memory |
+| syntect regex | tree-sitter AST | folding, `gd`, scope | larger grammars |
+| serde_json | simd-json | 3-10× 10MB JSON | simd feature |
+| read+copy text | memmap2 + SparseIndex lazy | O(viewport) not O(file) | index build 10ms/GB |
+| tokio::fs | tokio-uring (Linux) | -30% NVMe latency | Linux only |
+| handler recompile | Wasm plugin | no rebuild, trap safe | wasmtime ~3 MB |
+| catch_unwind-only C | child isolation | segfault → parent alive | fork 15 MB ephemeral |
+| unveil none | Landlock/Seatbelt | least-privilege per worker | kernel 5.13+ |
+| manual repro | Redux history | deterministic replay | 5 MB ring |
 
-- `tui-rs` (deprecated) → `ratatui`
-- `termion` (Unix only) → `crossterm` (cross-platform)
-- `ffmpeg` CLI → `ffmpeg-next` binding (feature-gated)
-- `libreoffice` CLI → `docx-rs`/`calamine`
-- `poppler` CLI → `lopdf`/`pdfium-render` (was `mupdf`)
-- `pptx-rs` (abandoned, 1 release) → `zip`+`quick-xml` in-house
-
-## 7. Verification Commands
+## 5. Build & Verify
 
 ```powershell
-cargo build --release              # pure default, no C libs
-cargo build --release --features pdf-raster  # pdfium (Apache-2.0)
-cargo build --release --features video       # needs FFmpeg libs
+cargo build --release                              # ~10 MB pure
+cargo build --release --features daemon,wasm,tree-sitter,simd,clipboard  # ~20 MB
+cargo build --release --features full-ai           # ~35 MB heaviest
 cargo clippy -- -D warnings
-cargo deny check   # now bans AGPL — would fail if mupdf returned
-cargo audit
+cargo deny check   # bans AGPL — was catching mupdf
+cargo fuzz list
 cargo test --all-features
 ```
-
-This stack delivers **lightweight + fast + efficient + working + rich** — Rust with honest licensing, no AGPL contamination, no abandoned deps.
