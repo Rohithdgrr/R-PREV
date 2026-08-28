@@ -25,6 +25,9 @@ pub enum Action {
     NextSheet,     // Tab
     PrevSheet,     // Shift+Tab
     OpenExternal,  // o
+    NewFile,       // a
+    NewFolder,     // A / N
+    ToggleFormatFilter, // m
 }
 
 pub fn key_to_action(key: KeyEvent) -> Option<Action> {
@@ -45,11 +48,15 @@ pub fn key_to_action(key: KeyEvent) -> Option<Action> {
         (KeyCode::Tab, KeyModifiers::NONE) => Some(Action::NextSheet),
         (KeyCode::BackTab, _) => Some(Action::PrevSheet),
         (KeyCode::Char('o'), KeyModifiers::NONE) => Some(Action::OpenExternal),
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Some(Action::NewFile),
+        (KeyCode::Char('A'), _) => Some(Action::NewFolder),
+        (KeyCode::Char('N'), _) => Some(Action::NewFolder),
+        (KeyCode::Char('m'), KeyModifiers::NONE) => Some(Action::ToggleFormatFilter),
         (KeyCode::Char(' '), _) => Some(Action::PlayPause),
         (KeyCode::Char('s'), KeyModifiers::NONE) => Some(Action::Stop),
         (KeyCode::Enter, _) => Some(Action::Enter),
         (KeyCode::Backspace, _) => Some(Action::BackspaceChar),
-        (KeyCode::Char(c), KeyModifiers::NONE) if c != 'q' && c != 'j' && c != 'k' && c != 'g' && c != 'h' && c != 'f' && c != 's' && c != 'n' && c != 'p' && c != 'o' => Some(Action::Char(c)),
+        (KeyCode::Char(c), KeyModifiers::NONE) if c != 'q' && c != 'j' && c != 'k' && c != 'g' && c != 'h' && c != 'f' && c != 's' && c != 'n' && c != 'p' && c != 'o' && c != 'a' && c != 'm' => Some(Action::Char(c)),
         _ => None,
     }
 }

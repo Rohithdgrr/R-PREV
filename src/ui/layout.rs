@@ -31,6 +31,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_status(f, app, status_area);
         if let Some(area) = search_area { draw_search(f, app, area); }
         if app.mode == Mode::Help { draw_help(f); }
+        if app.mode == Mode::InputNewFile || app.mode == Mode::InputNewFolder { draw_input(f, app); }
         return;
     }
 
@@ -46,6 +47,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.mode == Mode::Help {
         draw_help(f);
+    }
+    if app.mode == Mode::InputNewFile || app.mode == Mode::InputNewFolder {
+        draw_input(f, app);
     }
 }
 
@@ -105,11 +109,14 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Mode::Search => "SEARCH",
         Mode::Help => "HELP",
         Mode::FullscreenPreview => "FULLSCREEN",
+        Mode::InputNewFile => "NEW FILE",
+        Mode::InputNewFolder => "NEW FOLDER",
     };
     let hidden_str = if app.show_hidden { "hidden:ON" } else { "hidden:OFF" };
+    let filter_str = if app.filter_formats_only { "filter:MEDIA" } else { "filter:ALL" };
     let audio_str = if app.audio_sink.is_some() { "♪ playing" } else { "" };
     let loading_str = if app.preview_loading { " loading…" } else { "" };
-    let txt = format!(" {} | {} | {} | {} | {}{} | f:fullscreen /:search Space:play q:quit ", mode_str, pos, cur, hidden_str, audio_str, loading_str);
+    let txt = format!(" {} | {} | {} | {} | {} | {}{} | f:fullscreen /:search a:new file A:new folder m:toggle filter q:quit ", mode_str, pos, cur, hidden_str, filter_str, audio_str, loading_str);
     let dir_line = format!(" Dir: {} ", dir);
     let status = crate::ui::status::render_status_line(&txt, &dir_line);
     f.render_widget(status, area);
@@ -131,9 +138,11 @@ fn draw_help(f: &mut Frame) {
         Line::from("  h            Toggle hidden  f Toggle fullscreen  q/Esc/Ctrl+C Quit"),
         Line::from(""),
         Line::from(Span::styled("Search & Preview:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  /            Fuzzy search (nucleo-matcher) — type to filter, Enter select, Esc clear"),
+        Line::from("  /            Fuzzy search — type to filter, Enter select, Esc clear"),
         Line::from("  Enter on TooLarge → force preview"),
         Line::from("  Space        Play/pause audio  s Stop audio"),
+        Line::from("  a            New file  A/N  New folder  o Open external  m Toggle format filter"),
+        Line::from("  Only media/doc formats shown by default (.jpg .png .pdf .doc etc) + dirs"),
         Line::from(""),
         Line::from(Span::styled("Phase 2:", Style::default().fg(Color::Yellow))),
         Line::from("  • Cache mem LRU 100 + disk 500MB quantized 8×4  sized pool"),
@@ -145,6 +154,27 @@ fn draw_help(f: &mut Frame) {
     ];
     let block = Block::default().borders(Borders::ALL).title(" Help ").border_style(Style::default().fg(Color::Yellow));
     let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+    f.render_widget(p, area);
+}
+
+fn draw_input(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 20, f.area());
+    f.render_widget(ratatui::widgets::Clear, area);
+    let is_folder = app.mode == Mode::InputNewFolder;
+    let title = if is_folder { " New Folder (Enter to create, Esc to cancel) " } else { " New File (Enter to create, Esc to cancel) " };
+    let block = Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    let prompt = if is_folder { "Folder name: " } else { "File name: " };
+    let input_line = format!("{}{}█", prompt, app.input_buffer);
+    let mut lines = vec![
+        Line::from(Span::styled(input_line, Style::default().fg(Color::White))),
+    ];
+    if let Some(err) = &app.input_error {
+        lines.push(Line::from(Span::styled(format!("Error: {}", err), Style::default().fg(Color::Red))));
+    } else {
+        lines.push(Line::from(Span::styled("Tip: name without path separator", Style::default().fg(Color::DarkGray))));
+    }
+    let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
 

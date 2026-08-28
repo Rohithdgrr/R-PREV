@@ -25,6 +25,8 @@ pub enum Mode {
     Search,
     Help,
     FullscreenPreview,
+    InputNewFile,
+    InputNewFolder,
 }
 
 pub struct App {
@@ -50,6 +52,11 @@ pub struct App {
     pub xlsx_sheet: usize,
     pub pptx_slide: usize,
     pub pdf_page: usize,
+    // Phase 4.5 input
+    pub input_buffer: String,
+    pub input_error: Option<String>,
+    // Filter: only show media/doc formats + dirs by default (user request)
+    pub filter_formats_only: bool,
 }
 
 impl App {
@@ -70,7 +77,8 @@ impl App {
         };
         let current_dir = current_dir.canonicalize().unwrap_or(current_dir);
         let show_hidden = config.general.show_hidden;
-        let files = crate::fs::list_dir(&current_dir, show_hidden).unwrap_or_default();
+        let filter_formats_only = true;
+        let files = crate::fs::list_dir_filtered(&current_dir, show_hidden, filter_formats_only).unwrap_or_default();
         let mut app = Self {
             files,
             selected: 0,
@@ -92,6 +100,9 @@ impl App {
             xlsx_sheet: 0,
             pptx_slide: 0,
             pdf_page: 0,
+            input_buffer: String::new(),
+            input_error: None,
+            filter_formats_only: true,
         };
         if path.is_file() {
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -114,7 +125,7 @@ impl App {
     }
 
     pub fn refresh_files(&mut self) {
-        if let Ok(files) = crate::fs::list_dir(&self.current_dir, self.show_hidden) {
+        if let Ok(files) = crate::fs::list_dir_filtered(&self.current_dir, self.show_hidden, self.filter_formats_only) {
             self.files = files;
             // re-filter if search active
             if self.search.active && !self.search.query.is_empty() {
@@ -190,6 +201,73 @@ impl App {
                 self.mode = Mode::Normal;
                 self.fullscreen = false;
                 self.dirty = true;
+                return false;
+            }
+            Mode::InputNewFile | Mode::InputNewFolder => {
+                match action {
+                    Action::Esc => {
+                        self.mode = Mode::Normal;
+                        self.input_buffer.clear();
+                        self.input_error = None;
+                        self.dirty = true;
+                    }
+                    Action::Enter => {
+                        let name = self.input_buffer.trim().to_string();
+                        if name.is_empty() {
+                            self.input_error = Some("Name cannot be empty".into());
+                            self.dirty = true;
+                            return false;
+                        }
+                        if name.contains('/') || name.contains('\\') {
+                            self.input_error = Some("Name cannot contain path separator".into());
+                            self.dirty = true;
+                            return false;
+                        }
+                        let is_folder = self.mode == Mode::InputNewFolder;
+                        let target = self.current_dir.join(&name);
+                        let res = if is_folder {
+                            std::fs::create_dir(&target)
+                        } else {
+                            std::fs::File::create(&target).map(|_| ())
+                        };
+                        match res {
+                            Ok(_) => {
+                                self.mode = Mode::Normal;
+                                self.input_buffer.clear();
+                                self.input_error = None;
+                                self.refresh_files();
+                                // select newly created file/folder
+                                if let Some(idx) = self.files.iter().position(|e| e.path == target) {
+                                    // map to visible index
+                                    let vis = self.visible_indices();
+                                    if let Some(vidx) = vis.iter().position(|&i| i == idx) {
+                                        self.selected = vidx;
+                                    } else {
+                                        self.selected = idx.min(self.files.len().saturating_sub(1));
+                                    }
+                                }
+                                self.spawn_preview(tx.clone(), jobs, abort);
+                                self.dirty = true;
+                                tracing::info!("created {} {:?}", if is_folder {"folder"} else {"file"}, target);
+                            }
+                            Err(e) => {
+                                self.input_error = Some(format!("Failed: {}", e));
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                    Action::BackspaceChar => {
+                        self.input_buffer.pop();
+                        self.input_error = None;
+                        self.dirty = true;
+                    }
+                    Action::Char(c) => {
+                        self.input_buffer.push(c);
+                        self.input_error = None;
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
                 return false;
             }
             Mode::Search => {
@@ -280,6 +358,7 @@ impl App {
             Action::Top => { self.selected = 0; self.xlsx_sheet = 0; self.pptx_slide = 0; self.pdf_page = 0; self.spawn_preview(tx.clone(), jobs, abort); self.dirty = true; }
             Action::Bottom => { let len = self.visible_indices().len(); if len>0 { self.selected = len-1; self.xlsx_sheet = 0; self.pptx_slide = 0; self.pdf_page = 0; self.spawn_preview(tx.clone(), jobs, abort); } self.dirty = true; }
             Action::ToggleHidden => { self.show_hidden = !self.show_hidden; self.refresh_files(); self.spawn_preview(tx.clone(), jobs, abort); self.dirty = true; }
+            Action::ToggleFormatFilter => { self.filter_formats_only = !self.filter_formats_only; self.refresh_files(); self.spawn_preview(tx.clone(), jobs, abort); self.dirty = true; }
             Action::ToggleHelp => { self.mode = Mode::Help; self.dirty = true; }
             Action::Search => { self.mode = Mode::Search; self.search.enter(); self.filtered = Some((0..self.files.len()).collect()); self.selected = 0; self.dirty = true; }
             Action::ToggleFullscreen => { self.mode = Mode::FullscreenPreview; self.fullscreen = true; self.dirty = true; }
@@ -354,6 +433,18 @@ impl App {
                     let _ = open::that(&entry.path);
                     tracing::info!("open external {:?}", entry.path);
                 }
+                self.dirty = true;
+            }
+            Action::NewFile => {
+                self.mode = Mode::InputNewFile;
+                self.input_buffer.clear();
+                self.input_error = None;
+                self.dirty = true;
+            }
+            Action::NewFolder => {
+                self.mode = Mode::InputNewFolder;
+                self.input_buffer.clear();
+                self.input_error = None;
                 self.dirty = true;
             }
             Action::PlayPause => { self.toggle_audio(); self.dirty = true; }
@@ -469,6 +560,17 @@ pub async fn run(path: PathBuf, cfg: Config) -> anyhow::Result<()> {
                         }
                         continue;
                     }
+                    // Input modes for new file/folder (Phase 4.5) — direct char handling so 'a' types correctly
+                    if app.mode == Mode::InputNewFile || app.mode == Mode::InputNewFolder {
+                        match key.code {
+                            KeyCode::Esc => { app.handle_action(Action::Esc, &tx, &mut jobs, &mut current_abort); },
+                            KeyCode::Enter => { app.handle_action(Action::Enter, &tx, &mut jobs, &mut current_abort); },
+                            KeyCode::Backspace => { app.handle_action(Action::BackspaceChar, &tx, &mut jobs, &mut current_abort); },
+                            KeyCode::Char(c) => { app.handle_action(Action::Char(c), &tx, &mut jobs, &mut current_abort); },
+                            _ => {}
+                        }
+                        continue;
+                    }
                     if let Some(action) = key_to_action(key) {
                         // Map Esc in Normal to Quit handled; but handle_action already maps
                         if app.handle_action(action, &tx, &mut jobs, &mut current_abort) {
@@ -552,7 +654,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().to_path_buf();
         std::fs::write(p.join("visible.txt"), b"x").unwrap();
-        std::fs::write(p.join(".hidden"), b"x").unwrap();
+        std::fs::write(p.join(".hidden.txt"), b"x").unwrap();
         let mut cfg = Config::default();
         cfg.general.show_hidden = false;
         let cfg = Arc::new(cfg);
