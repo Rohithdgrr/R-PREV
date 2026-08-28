@@ -1,5 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 //! tui-preview — Pure Rust TUI universal file previewer
-//! See docs/ARCHITECTURE.md for design. Review fixes: panic=unwind kept, quantized cache, centralized timeout.
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -14,45 +14,19 @@ mod preview;
 mod term;
 mod ui;
 
-// cache dir helper for tracing writer (directories-next)
-fn cache_log_writer() -> Box<dyn std::io::Write + Send + Sync> {
-    let dir = directories_next::BaseDirs::new()
-        .map(|d| d.cache_dir().join("tui-preview"))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let path = dir.join("debug.log");
-    let _ = std::fs::create_dir_all(&dir);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map(|f| Box::new(f) as Box<dyn std::io::Write + Send + Sync>)
-        .unwrap_or_else(|_| Box::new(std::io::stderr()) as Box<dyn std::io::Write + Send + Sync>)
-}
-
 #[derive(Parser, Debug)]
 #[command(name = "tui-preview", version, about = "Pure Rust TUI universal file previewer")]
 struct Args {
-    /// Path to file or directory to open
     #[arg(default_value = ".")]
     path: String,
-
-    /// Generate default config file and exit
     #[arg(long)]
     init_config: bool,
-
-    /// Clear disk cache and exit
     #[arg(long)]
     clear_cache: bool,
-
-    /// Headless preview: print preview for file to stdout (for fzf)
     #[arg(long)]
     preview: Option<String>,
-
-    /// Override theme (dark|light)
     #[arg(long)]
     theme: Option<String>,
-
-    /// Benchmark directory and exit
     #[arg(long)]
     bench: Option<String>,
 }
@@ -60,10 +34,25 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let writer: Box<dyn std::io::Write + Send + Sync> = cache_log_writer();
-    // tracing_subscriber fmt with EnvFilter; use writer closure
-    let _ = writer;
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+
+    // Tracing to ~/.cache/tui-preview/debug.log — Phase 2 spec, RUST_LOG env
+    let cache_dir = directories::ProjectDirs::from("com", "tui-preview", "tui-preview")
+        .map(|d| d.cache_dir().join("tui-preview"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".cache").join("tui-preview"));
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let log_path = cache_dir.join("debug.log");
+    let log_path_clone = log_path.clone();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_writer(move || {
+            std::fs::OpenOptions::new().create(true).append(true).open(&log_path_clone).unwrap_or_else(|_| {
+                // Windows fallback NUL, Unix /dev/null
+                #[cfg(windows)] { std::fs::File::create("NUL").unwrap_or_else(|_| std::fs::File::create(log_path_clone.clone()).unwrap()) }
+                #[cfg(not(windows))] { std::fs::File::create("/dev/null").unwrap() }
+            })
+        })
+        .init();
+    tracing::info!("tui-preview started args={:?}", args);
 
     if args.init_config {
         let p = config::init_default_config()?;

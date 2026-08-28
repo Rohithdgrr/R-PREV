@@ -9,6 +9,23 @@ use ratatui::prelude::Rect;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use ::image::DynamicImage;
+
+pub mod archive;
+pub mod audio;
+pub mod csv;
+pub mod hex;
+pub mod image;
+pub mod meta;
+pub mod office;
+pub mod pdf;
+pub mod text;
+pub mod video;
+
+use std::cell::Cell;
+thread_local! { static FORCE_PREVIEW: Cell<bool> = const { Cell::new(false) }; }
+pub fn set_force_preview(v: bool) { FORCE_PREVIEW.with(|c| c.set(v)); }
+pub fn is_force_preview() -> bool { FORCE_PREVIEW.with(|c| c.get()) }
 
 #[derive(Debug)]
 pub struct PreviewCtx {
@@ -19,11 +36,11 @@ pub struct PreviewCtx {
     pub cancel: CancellationToken,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PreviewResult {
     Text { lines: Vec<ratatui::text::Line<'static>>, title: String, meta: FileMeta },
     Table { rows: Vec<Vec<String>>, headers: Vec<String>, meta: FileMeta },
-    Image { rgba: image::DynamicImage, meta: FileMeta },
+    Image { rgba: DynamicImage, meta: FileMeta },
     Audio { meta: AudioMeta, waveform: Vec<u8>, duration: Duration },
     Archive { entries: Vec<ArchiveEntry>, meta: FileMeta },
     Directory { entries: Vec<EntrySummary> },
@@ -145,9 +162,52 @@ fn read_magic(path: &Path) -> Vec<u8> {
     buf[..n].to_vec()
 }
 
-pub fn build_router(_config: &Config) -> Router {
-    // stub — register handlers per docs/BACKEND.md §2.3
-    Router::new(vec![Arc::new(FallbackHandler)])
+pub fn build_router(config: &Config) -> Router {
+    use crate::preview::{csv::CsvHandler, image::ImageHandler, text::TextHandler, audio::AudioHandler, pdf::PdfHandler, office::OfficeHandler};
+    let mut handlers: Vec<Arc<dyn PreviewHandler>> =
+        vec![Arc::new(CsvHandler), Arc::new(AudioHandler), Arc::new(ImageHandler), Arc::new(PdfHandler), Arc::new(OfficeHandler), Arc::new(TextHandler)];
+    let _ = config;
+    handlers.push(Arc::new(FallbackHandler));
+    Router::new(handlers)
+}
+
+/// Sync helper for Phase 1 — no async needed in UI thread for small files
+pub fn preview_sync(router: &Router, path: &Path) -> PreviewResult {
+    // Handle directory specially
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let mut items = Vec::new();
+            for e in entries.flatten().take(50) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                items.push(EntrySummary { name, is_dir });
+            }
+            items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.cmp(&b.name),
+            });
+            return PreviewResult::Directory { entries: items };
+        }
+    }
+    let handler = router.route(path);
+    let ctx = PreviewCtx {
+        path: path.to_path_buf(),
+        area: ratatui::layout::Rect::default(),
+        cache_dir: std::path::PathBuf::from("."),
+        config: std::sync::Arc::new(Config::default()),
+        cancel: tokio_util::sync::CancellationToken::new(),
+    };
+    match handler.preview_blocking(ctx) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            // If TooLarge, add Enter to force hint
+            let is_too_large = matches!(e, crate::error::PreviewError::TooLarge(_, _));
+            let hint = if is_too_large { " — Press Enter to force preview" } else { "" };
+            PreviewResult::Error { msg: format!("{}: {}{}", handler.name(), msg, hint), fallback: None }
+        }
+    }
 }
 
 struct FallbackHandler;
@@ -178,4 +238,124 @@ pub async fn headless_preview(_file: &str) -> anyhow::Result<()> {
 
 pub async fn bench_dir(_dir: &str) -> anyhow::Result<()> {
     anyhow::bail!("--bench stub")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    #[test]
+    fn preview_text_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/sample.txt"));
+        match res {
+            PreviewResult::Text { .. } => {}
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_csv_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/sample.csv"));
+        match res {
+            PreviewResult::Table { headers, rows, .. } => {
+                assert_eq!(headers, vec!["name", "age", "city"]);
+                assert_eq!(rows.len(), 3);
+            }
+            other => panic!("expected Table, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_markdown_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/notes.md"));
+        match res {
+            PreviewResult::Text { lines, .. } => {
+                assert!(!lines.is_empty());
+            }
+            other => panic!("expected Text for md, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_image_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/sample.png"));
+        match res {
+            PreviewResult::Image { .. } => {}
+            other => panic!("expected Image, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_directory_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures"));
+        match res {
+            PreviewResult::Directory { .. } => {}
+            other => panic!("expected Directory, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_binary_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bin.dat");
+        std::fs::write(&path, [0u8, 1, 2, 255, 254, 0, 10]).unwrap();
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, &path);
+        match res {
+            PreviewResult::Error { .. } => {}
+            other => panic!("expected Error for binary, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_pdf_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/report.pdf"));
+        match res {
+            PreviewResult::Text { lines, .. } => {
+                let text = lines.iter().map(|l| l.width().to_string()).collect::<Vec<_>>().join("");
+                assert!(!lines.is_empty(), "pdf lines empty");
+            }
+            other => panic!("expected Text for pdf, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_docx_fixture() {
+        let router = build_router(&Config::default());
+        let res = preview_sync(&router, std::path::Path::new("fixtures/sample.docx"));
+        match res {
+            PreviewResult::Text { lines, .. } => { assert!(!lines.is_empty()); },
+            other => panic!("expected Text for docx, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_xlsx_fixture() {
+        let path = std::path::Path::new("fixtures/sales.xlsx");
+        let res = crate::preview::office::preview_xlsx_with_sheet(path, 0).expect("xlsx sheet 0");
+        match res {
+            PreviewResult::Table { headers, rows, .. } => {
+                assert!(headers.contains(&"Product".to_string()) || headers.contains(&"Product".to_string()));
+                assert!(rows.len() >= 2);
+            }
+            other => panic!("expected Table for xlsx, got {:?}", other),
+        }
+        // sheet switching
+        let res2 = crate::preview::office::preview_xlsx_with_sheet(path, 1).expect("xlsx sheet 1");
+        match res2 {
+            PreviewResult::Table { .. } => {},
+            other => panic!("expected Table for sheet 1, got {:?}", other),
+        }
+    }
+    #[test]
+    fn preview_pptx_fixture() {
+        let path = std::path::Path::new("fixtures/deck.pptx");
+        let res = crate::preview::office::preview_pptx(path, 0).expect("pptx slide 0");
+        match res {
+            PreviewResult::Text { lines, .. } => { assert!(!lines.is_empty()); },
+            other => panic!("expected Text for pptx, got {:?}", other),
+        }
+        let cnt = crate::preview::office::pptx_slide_count(path);
+        assert!(cnt >= 3, "slide count {}", cnt);
+        let res2 = crate::preview::office::preview_pptx(path, 1).expect("pptx slide 1");
+        match res2 { PreviewResult::Text { .. } => {}, other => panic!("expected Text slide 1, got {:?}", other) }
+    }
 }

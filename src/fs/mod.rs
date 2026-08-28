@@ -1,30 +1,147 @@
-//! FS — list_dir sorted dirs-first, hidden toggle, git badges (feature git), du on demand
-use std::path::Path;
+//! FS — list_dir sorted dirs-first, hidden toggle, symlink depth guard
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Entry {
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    pub is_symlink: bool,
+    pub symlink_target: Option<PathBuf>,
 }
 
-pub fn list_dir(path: &Path, _show_hidden: bool) -> anyhow::Result<Vec<Entry>> {
+impl Entry {
+    pub fn display_prefix(&self) -> &'static str {
+        if self.is_symlink {
+            "🔗 "
+        } else if self.is_dir {
+            "📁 "
+        } else {
+            "📄 "
+        }
+    }
+    pub fn human_size(&self) -> String {
+        human_size(self.size)
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit])
+    }
+}
+
+/// List directory sorted dirs-first, alphabetical case-insensitive, respects hidden filter and symlink depth.
+pub fn list_dir(path: &Path, show_hidden: bool) -> anyhow::Result<Vec<Entry>> {
     let mut entries = Vec::new();
-    for e in std::fs::read_dir(path)? {
+    let read = std::fs::read_dir(path)
+        .map_err(|e| anyhow::anyhow!("cannot read dir {}: {}", path.display(), e))?;
+    for e in read {
         let e = e?;
-        let m = e.metadata()?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Hidden filter
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let entry_path = e.path();
+        let md = e.file_type()?;
+        let is_symlink = md.is_symlink();
+        let (is_dir, size, target) = if is_symlink {
+            match resolve_symlink(&entry_path, 10) {
+                Ok((p, md)) => (md.is_dir(), md.len(), Some(p)),
+                Err(_) => (false, 0, None), // broken symlink
+            }
+        } else {
+            let m = e.metadata()?;
+            (m.is_dir(), m.len(), None)
+        };
         entries.push(Entry {
-            path: e.path(),
-            name: e.file_name().to_string_lossy().into_owned(),
-            is_dir: m.is_dir(),
-            size: m.len(),
+            path: entry_path,
+            name,
+            is_dir,
+            size,
+            is_symlink,
+            symlink_target: target,
         });
     }
+    // Sort: dirs first, then case-insensitive alphabetical
     entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.cmp(&b.name),
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
     Ok(entries)
+}
+
+fn resolve_symlink(path: &Path, max_depth: usize) -> anyhow::Result<(PathBuf, std::fs::Metadata)> {
+    let mut current = path.to_path_buf();
+    let mut depth = 0;
+    loop {
+        if depth > max_depth {
+            anyhow::bail!("symlink depth exceeded {}", max_depth);
+        }
+        let target = std::fs::read_link(&current)?;
+        let next = if target.is_absolute() {
+            target
+        } else {
+            current.parent().unwrap_or_else(|| Path::new(".")).join(target)
+        };
+        current = next;
+        // Check if still symlink
+        let ft = std::fs::symlink_metadata(&current)?;
+        if !ft.is_symlink() {
+            let md = std::fs::metadata(&current)?;
+            return Ok((current, md));
+        }
+        depth += 1;
+    }
+}
+
+/// Human-readable size for status bar
+pub fn human_size_public(bytes: u64) -> String {
+    human_size(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    #[test]
+    fn test_list_dir_sorting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir(dir.join("b_dir")).unwrap();
+        fs::create_dir(dir.join("a_dir")).unwrap();
+        fs::write(dir.join("z_file.txt"), b"hello").unwrap();
+        fs::write(dir.join("a_file.txt"), b"hello").unwrap();
+        let entries = list_dir(dir, false).unwrap();
+        // dirs first alphabetical, then files alphabetical
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].name, "a_dir");
+        assert_eq!(entries[1].name, "b_dir");
+        assert_eq!(entries[2].name, "a_file.txt");
+        assert_eq!(entries[3].name, "z_file.txt");
+    }
+    #[test]
+    fn test_hidden_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join(".hidden"), b"x").unwrap();
+        fs::write(dir.join("visible.txt"), b"x").unwrap();
+        let no_hidden = list_dir(dir, false).unwrap();
+        assert_eq!(no_hidden.len(), 1);
+        assert_eq!(no_hidden[0].name, "visible.txt");
+        let with_hidden = list_dir(dir, true).unwrap();
+        assert_eq!(with_hidden.len(), 2);
+    }
 }
